@@ -15,8 +15,8 @@ def transformer_en_lien_direct(url):
     except Exception: return url
 
 # Liens Dynamiques
-URL_CUVES = transformer_en_lien_direct("https://energenic-my.sharepoint.com/:x:/r/personal/anicet_bibout_energenic_cloud/Documents/Documents/SMARTSTATION/ALGO/Simulateur/Inventaire_Cuves_Variation.csv?d=w62aa55394c1a40ceb273281ab619d0f2&csf=1&web=1&e=x2iV4a")
-URL_POMPES = transformer_en_lien_direct("https://energenic-my.sharepoint.com/:x:/r/personal/anicet_bibout_energenic_cloud/Documents/Documents/SMARTSTATION/ALGO/Simulateur/Inventaire_Cuves_Variation.csv?d=w62aa55394c1a40ceb273281ab619d0f2&csf=1&web=1&e=x2iV4a")
+URL_CUVES = transformer_en_lien_direct("https://drive.google.com/file/d/1BxdKjJB7Difw4vfe4OKylMV_b5PAGUgL/view?usp=sharing")
+URL_POMPES = transformer_en_lien_direct("https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing")
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 SEUIL_LEGAL = 0.5
