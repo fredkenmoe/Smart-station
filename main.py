@@ -4,8 +4,6 @@ import numpy as np
 import plotly.graph_objects as go
 from sklearn.ensemble import IsolationForest
 from sklearn.linear_model import TheilSenRegressor
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.pipeline import make_pipeline
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Smart-Station IA Energenic", layout="wide")
@@ -24,8 +22,8 @@ URL_POMPES = transformer_drive_en_direct("https://drive.google.com/file/d/1H19rg
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 SEUIL_LEGAL = 0.5
-ALPHA = 0.95
-PROJECTION_NB_POINTS = 96 * 10 # Projection sur 10 jours (96 slots de 15min par jour)
+ALPHA = 1.0  # Mis à 1.0 pour une réactivité maximale sans lissage
+PROJECTION_NB_POINTS = 96 * 10 # Projection sur 10 jours
 
 # --- CHARGEMENT ---
 @st.cache_data(ttl=600)
@@ -75,55 +73,56 @@ def analyser_ia_complet(df, cols_p):
         subset = df[df['ID_Cuve'] == id_c].sort_values('Timestamp')
         if subset.empty: continue
 
-        # Projection focus 24h avec modèle Quadratique pour capturer l'accélération
+        # 1. PROJECTION LINÉAIRE ROBUSTE (Theil-Sen sur 24h)
         for p_id in pompes_cuve:
             p_str = str(p_id)
             if f'CUSUM_P{p_str}' in subset.columns:
-                y = subset[f'CUSUM_P{p_str}'].values
+                y_val = subset[f'CUSUM_P{p_str}'].values
                 vol_p_total = subset[p_str].sum()
                 limite_p_litres = vol_p_total * (SEUIL_LEGAL / 100)
 
-                if len(y) > 10:
-                    # Utilisation de PolynomialFeatures pour une projection quadratique précise
-                    model_quad = make_pipeline(PolynomialFeatures(2), TheilSenRegressor(random_state=42))
-                    n_focus = min(len(y), 96) 
-                    x_train = np.arange(len(y) - n_focus, len(y)).reshape(-1, 1)
-                    y_train = y[-n_focus:]
+                if len(y_val) > 10:
+                    model_ts = TheilSenRegressor(random_state=42)
+                    n_focus = min(len(y_val), 96) # Focus dernières 24h
+                    x_train = np.arange(len(y_val) - n_focus, len(y_val)).reshape(-1, 1)
+                    y_train = y_val[-n_focus:]
+                    model_ts.fit(x_train, y_train)
                     
-                    model_quad.fit(x_train, y_train)
+                    pente = model_ts.coef_[0]
                     
-                    # Futur pour calcul des jours
-                    futur_indices = np.arange(len(y), len(y) + 35040).reshape(-1, 1)
-                    futur_y = model_quad.predict(futur_indices)
-                    
-                    # Futur pour affichage graphique (10 jours)
-                    graph_indices = np.arange(len(y), len(y) + PROJECTION_NB_POINTS).reshape(-1, 1)
-                    graph_y = model_quad.predict(graph_indices)
+                    # Projection 10j pour le graphique
+                    graph_indices = np.arange(len(y_val), len(y_val) + PROJECTION_NB_POINTS)
+                    graph_y = y_val[-1] + (graph_indices - (len(y_val)-1)) * pente
                     graph_times = [subset['Timestamp'].max() + pd.Timedelta(minutes=15*i) for i in range(1, PROJECTION_NB_POINTS + 1)]
                     
-                    idx_dep = np.where(abs(futur_y) > limite_p_litres)[0]
-                    
-                    if abs(y[-1]) > limite_p_litres:
-                        msg, color, jours = "🔴 HORS-NORME", "red", "DÉPASSEMENT"
-                    elif len(idx_dep) > 0:
-                        j = round((idx_dep[0] * 15) / 1440, 1)
-                        msg, color, jours = "🟡 CRITIQUE", "orange", f"{j} jours"
+                    # Calcul jours restants
+                    if (pente > 0 and y_val[-1] < limite_p_litres) or (pente < 0 and y_val[-1] > -limite_p_litres):
+                        target = limite_p_litres if pente > 0 else -limite_p_litres
+                        nb_slots = (target - y_val[-1]) / pente
+                        j = round((nb_slots * 15) / 1440, 1)
+                        jours_txt = f"{j} jours" if 0 < j < 365 else "> 1 an"
                     else:
-                        msg, color, jours = "✅ SAIN", "#00d4ff", "> 1 an"
+                        jours_txt = "Stable"
                     
+                    status = "✅ SAIN"
+                    color = "#00d4ff"
+                    if abs(y_val[-1]) > limite_p_litres:
+                        status, color, jours_txt = "🔴 HORS-NORME", "red", "DÉPASSEMENT"
+                    elif "jours" in jours_txt and float(jours_txt.split()[0]) < 7:
+                        status, color = "🟡 CRITIQUE", "orange"
+
                     diagnostics_preventifs[p_id] = {
-                        "msg": msg, "color": color, "jours": jours, 
+                        "msg": status, "color": color, "jours": jours_txt, 
                         "graph_y": graph_y, "graph_x": graph_times
                     }
 
-        # Détection anomalies avec ajout des jours restants dans le rapport
+        # 2. RAPPORT DES ANOMALIES (Incluant la Cuve)
         anomalies_brusques = subset[(subset['Anomaly_Score'] == -1) & (abs(subset['Ratio_Brut']) > SEUIL_LEGAL)]
         for _, row_a in anomalies_brusques.iterrows():
             type_ano = "VOL / FUITE" if row_a['Ratio_Brut'] > 0.5 else "MÉTROLOGIE / AIR"
-            # On cherche l'échéance de la pompe liée à cette cuve
-            p_lies = LIAISONS[id_c][0] 
-            echeance = diagnostics_preventifs.get(p_lies, {}).get('jours', 'N/A')
-            rapport_diagnostic.append(f"🚨 {row_a['Timestamp'].strftime('%d/%m %H:%M')} : {type_ano} ({row_a['Ratio_Brut']:.2f}%) - Échéance maintenance : {echeance}")
+            p_ref = pompes_cuve[0]
+            echeance = diagnostics_preventifs.get(p_ref, {}).get('jours', 'N/A')
+            rapport_diagnostic.append(f"🚨 CUVE {id_c} | {row_a['Timestamp'].strftime('%d/%m %H:%M')} : {type_ano} ({row_a['Ratio_Brut']:.2f}%) - Échéance maintenance : {echeance}")
 
     return df, rapport_diagnostic, diagnostics_preventifs
 
@@ -132,6 +131,15 @@ data, p_ids = charger_donnees(URL_CUVES, URL_POMPES)
 
 if data is not None:
     data, journal, stats = analyser_ia_complet(data, p_ids)
+    
+    # Barre Latérale : Récapitulatif de toutes les pompes
+    st.sidebar.header("📋 Prévisions Maintenance")
+    for p in sorted(p_ids):
+        s_p = stats.get(int(p), {"jours": "N/A", "msg": "N/A"})
+        st.sidebar.write(f"**Pompe {p}** : {s_p['msg']}")
+        st.sidebar.caption(f"Échéance : {s_p['jours']}")
+        st.sidebar.divider()
+
     c_id = st.sidebar.selectbox("Sélection Cuve", [1, 2])
     df_c = data[data['ID_Cuve'] == c_id].sort_values('Timestamp')
 
@@ -143,6 +151,7 @@ if data is not None:
 
     st.divider()
 
+    # Graph Ratio
     st.subheader(f"📊 Analyse Instantanée (Brut) : Cuve {c_id}")
     fig_ratio = go.Figure()
     colors = np.where(df_c['Ratio_Brut'].abs() <= SEUIL_LEGAL, '#00ff88', '#ff4b4b')
@@ -152,6 +161,7 @@ if data is not None:
     fig_ratio.update_layout(template="plotly_dark", height=400)
     st.plotly_chart(fig_ratio, use_container_width=True)
 
+    # Graph CUSUM avec Pointillés
     st.subheader("📈 Santé Métrologique & Projection 10j (Pointillés)")
     for p_id in LIAISONS[c_id]:
         p_str = str(p_id)
@@ -164,9 +174,9 @@ if data is not None:
             # Historique
             fig_p.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c[f'CUSUM_P{p_str}'], name="CUSUM Réel", line=dict(color='#00d4ff', width=3)))
             
-            # Projection en pointillés
+            # Projection Linéaire (Pointillés)
             if "graph_x" in s_p:
-                fig_p.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["graph_y"], name="Projection IA (10j)", line=dict(color='yellow', width=2, dash='dot')))
+                fig_p.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["graph_y"], name="Tendance IA (10j)", line=dict(color='yellow', width=2, dash='dot')))
             
             # Tunnel
             fig_p.add_trace(go.Scatter(x=df_c['Timestamp'], y=limite, name="Limite +", line=dict(color='rgba(255, 75, 75, 0.5)', dash='dot')))
