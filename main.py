@@ -62,7 +62,7 @@ def analyser_ia_complet(df, cols_p):
         ecart_cuve_litres = row['Baisse_Cuve'] - row['Ventes_Totales']
         for p in cols_p:
             ratio_debit = row[p] / row['Ventes_Totales'] if row['Ventes_Totales'] > 0 else 0
-            cusum_vals[p] = (cusum_vals[p]*ALPHA) + (ecart_cuve_litres * ratio_debit)
+            cusum_vals[p] = (cusum_vals[p]) + (ecart_cuve_litres * ratio_debit)
             df.at[idx, f'CUSUM_P{p}'] = cusum_vals[p]
 
     model_if = IsolationForest(contamination=0.01, random_state=42)
