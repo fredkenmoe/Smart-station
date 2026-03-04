@@ -8,21 +8,25 @@ from sklearn.linear_model import TheilSenRegressor
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Smart-Station IA Energenic", layout="wide")
 
-def transformer_en_lien_direct(url):
+def transformer_drive_en_direct(url):
     try:
-        base_url = url.split("?")[0]
-        return f"{base_url}?download=1"
-    except Exception: return url
+        if "drive.google.com" in url:
+            file_id = url.split("/d/")[1].split("/")[0]
+            return f"https://drive.google.com/uc?export=download&id={file_id}"
+        return url
+    except Exception:
+        return url
 
 # Liens Dynamiques
-URL_CUVES = transformer_en_lien_direct("https://drive.google.com/file/d/1BxdKjJB7Difw4vfe4OKylMV_b5PAGUgL/view?usp=sharing")
-URL_POMPES = transformer_en_lien_direct("https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing")
+URL_CUVES = transformer_drive_en_direct("https://drive.google.com/file/d/1BxdKjJB7Difw4vfe4OKylMV_b5PAGUgL/view?usp=sharing")
+URL_POMPES = transformer_drive_en_direct("https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing")
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 SEUIL_LEGAL = 0.5
-PROJECTION_INTERVALLES = 35040 # 1 an en créneaux de 15min
+ALPHA = 0.99
+PROJECTION_INTERVALLES = 35040  # 1 an
 
-# --- CHARGEMENT & RÉCONCILIATION ---
+# --- CHARGEMENT ---
 @st.cache_data(ttl=600)
 def charger_donnees(url_c, url_p):
     try:
@@ -41,85 +45,106 @@ def charger_donnees(url_c, url_p):
         df['Ventes_Totales'] = df[cols_p].sum(axis=1)
         df = df[(df['Baisse_Cuve'] >= 0) & (df['Ventes_Totales'] > 0)].copy()
         df['Ratio_Brut'] = ((df['Baisse_Cuve'] - df['Ventes_Totales']) / df['Ventes_Totales']) * 100
+        df['Ratio_Lisse'] = df.groupby('ID_Cuve')['Ratio_Brut'].transform(lambda x: x.rolling(window=8, min_periods=1).mean())
         return df, cols_p
     except Exception as e:
-        st.error(f"Erreur : {e}")
+        st.error(f"Erreur de lecture : {e}")
         return None, []
 
-# --- ANALYSE PRÉDICTIVE ---
-def analyser_ia(df, cols_p):
-    rapport = []
-    stats_pompes = {}
+# --- COEUR DE L'IA (NON SIMPLIFIÉ) ---
+def analyser_ia_complet(df, cols_p):
+    # 2. CUSUM par pompe (Accumulation en LITRES)
+    pompes_ids = [int(c) for c in cols_p]
+    cusum_vals = {p: 0.0 for p in pompes_ids}
     
-    # Isolation Forest pour les anomalies
+    for idx, row in df.iterrows():
+        ecart_cuve_litres = row['Baisse_Cuve'] - row['Ventes_Totales']
+        for p in pompes_ids:
+            ratio_debit = row[str(p)] / row['Ventes_Totales'] if row['Ventes_Totales'] > 0 else 0
+            erreur_p_litres = ecart_cuve_litres * ratio_debit
+            cusum_vals[p] = (ALPHA * cusum_vals[p]) + (erreur_p_litres)
+            df.at[idx, f'CUSUM_P{p}'] = cusum_vals[p]
+
+    # 3. Isolation Forest pour anomalies brusques
     model_if = IsolationForest(contamination=0.01, random_state=42)
-    df['Anomaly'] = model_if.fit_predict(df[['Ratio_Brut']])
+    df['Anomaly_Score'] = model_if.fit_predict(df[['Ratio_Lisse']])
+    
+    rapport_diagnostic = []
+    stats_maintenance = {}
 
     for id_c, pompes_cuve in LIAISONS.items():
-        sub = df[df['ID_Cuve'] == id_c].sort_values('Timestamp')
-        
+        subset = df[df['ID_Cuve'] == id_c].sort_values('Timestamp')
+
+        # Analyse des anomalies brusques
+        anomalies = subset[(subset['Anomaly_Score'] == -1) & (abs(subset['Ratio_Brut']) > SEUIL_LEGAL)]
+        for _, row_a in anomalies.iterrows():
+            if row_a['Ratio_Brut'] > 0.5: type_ano = "🚨 VOL / FUITE POSSIBLE"
+            elif row_a['Ratio_Brut'] < -0.5: type_ano = "🌬️ MÉTROLOGIE / PRÉSENCE D'AIR"
+            else: type_ano = "⚠️ ANOMALIE NON CLASSÉE"
+            rapport_diagnostic.append(f"{type_ano} ({row_a['Ratio_Brut']:.2f}%) le {row_a['Timestamp'].strftime('%d/%m %H:%M')}")
+
+        # 4. Projection et Santé par Pompe
         for p_id in pompes_cuve:
-            # Calcul CUSUM
-            ratio_p = sub[str(p_id)] / sub['Ventes_Totales']
-            sub[f'CUSUM_P{p_id}'] = (sub['Baisse_Cuve'] - sub['Ventes_Totales']) * ratio_p
-            sub[f'CUSUM_P{p_id}'] = sub[f'CUSUM_P{p_id}'].cumsum()
-            
-            y = sub[f'CUSUM_P{p_id}'].values
+            col_cusum = f'CUSUM_P{p_id}'
+            y = subset[col_cusum].values
             x = np.arange(len(y)).reshape(-1, 1)
-            limite_L = sub[str(p_id)].sum() * (SEUIL_LEGAL / 100)
+            
+            vol_p_total = subset[str(p_id)].sum()
+            limite_litres = vol_p_total * (SEUIL_LEGAL / 100)
 
             if len(y) > 20:
-                # Régression Robuste
                 model_ts = TheilSenRegressor(random_state=42)
                 model_ts.fit(x, y)
-                futur_x = np.arange(len(y), len(y) + PROJECTION_INTERVALLES).reshape(-1, 1)
-                futur_y = model_ts.predict(futur_x)
+                future_x = np.arange(len(y), len(y) + PROJECTION_INTERVALLES).reshape(-1, 1)
+                future_y = model_ts.predict(future_x)
                 
-                # Calcul Échéance
-                idx_dep = np.where(abs(futur_y) > limite_L)[0]
-                if abs(y[-1]) > limite_L:
-                    status, color = "🔴 HORS-NORME", "red"
+                # Calcul de l'échéance
+                idx_dep = np.where(abs(future_y) > limite_Litre := limite_litres)[0]
+                if abs(y[-1]) > limite_litres:
+                    msg, color, status_txt = "🔴 HORS-NORME", "red", "LIMITE DÉPASSÉE"
                 elif len(idx_dep) > 0:
                     jours = round((idx_dep[0] * 15) / 1440, 1)
-                    status, color = (f"🟡 CRITIQUE : {jours}j", "orange") if jours < 30 else (f"🟡 PRÉVISION : {jours}j", "yellow")
+                    msg, color = (f"🟡 CRITIQUE : {jours}j", "orange") if jours < 30 else (f"🟡 PRÉVISION : {jours}j", "yellow")
+                    status_txt = f"Dérive prévue dans {jours} jours"
                 else:
-                    status, color = "✅ SANTÉ : OK", "#00d4ff"
+                    msg, color, status_txt = "✅ SANTÉ : OK", "#00d4ff", "Stable > 1 an"
                 
-                stats_pompes[p_id] = {"status": status, "color": color, "futur": futur_y, "limite": limite_L}
+                stats_maintenance[p_id] = {"msg": msg, "color": color, "futur": future_y, "limite": limite_litres, "status": status_txt}
+                rapport_diagnostic.append(f"📊 Pompe {p_id} : {status_txt} (Erreur: {y[-1]:.2f}L / Limite: {limite_litres:.2f}L)")
 
-    return df, rapport, stats_pompes
+    return df, rapport_diagnostic, stats_maintenance
 
 # --- DASHBOARD ---
-st.title("⛽ Smart-Station : Maintenance IA")
+st.title("⛽ Smart-Station : IA & Maintenance Prédictive")
 data, p_ids = charger_donnees(URL_CUVES, URL_POMPES)
 
 if data is not None:
-    data, journal, stats = analyser_ia(data, p_ids)
+    data, journal, stats = analyser_ia_complet(data, p_ids)
     c_id = st.sidebar.selectbox("Sélection Cuve", [1, 2])
     
-    # Cartes d'échéance
     cols = st.columns(len(LIAISONS[c_id]))
     for i, p_id in enumerate(LIAISONS[c_id]):
         with cols[i]:
-            s = stats.get(p_id, {"status": "N/A", "color": "grey"})
+            s = stats.get(p_id, {"msg": "N/A", "color": "grey"})
             st.markdown(f"**Pompe {p_id}**")
-            st.subheader(f":{s['color']}[{s['status']}]")
+            st.subheader(f":{s['color']}[{s['msg']}]")
 
-    # Graphique de dérive (CUSUM + Projection)
     st.divider()
     for p_id in LIAISONS[c_id]:
         if p_id in stats:
             fig = go.Figure()
             df_v = data[data['ID_Cuve'] == c_id]
-            fig.add_trace(go.Scatter(x=df_v['Timestamp'], y=df_v[f'CUSUM_P{p_id}'], name="Dérive Réelle (L)"))
+            fig.add_trace(go.Scatter(x=df_v['Timestamp'], y=df_v[f'CUSUM_P{p_id}'], name="CUSUM Réel (L)", line=dict(color='#00d4ff')))
             
-            # Ajout de la projection
-            futur_t = [df_v['Timestamp'].max() + pd.Timedelta(minutes=15*j) for j in range(1000)] # On affiche les 1000 prochains
-            fig.add_trace(go.Scatter(x=futur_t, y=stats[p_id]['futur'][:1000], name="Projection IA", line=dict(dash='dash')))
+            last_t = df_v['Timestamp'].max()
+            futur_t = [last_t + pd.Timedelta(minutes=15*j) for j in range(1000)]
+            fig.add_trace(go.Scatter(x=futur_t, y=stats[p_id]['futur'][:1000], name="Projection IA", line=dict(color='yellow', dash='dash')))
             
-            # Limites
-            fig.add_hline(y=stats[p_id]['limite'], line_color="red", line_dash="dot")
-            fig.add_hline(y=-stats[p_id]['limite'], line_color="red", line_dash="dot")
-            
-            fig.update_layout(title=f"Projection de dérive Pompe {p_id}", template="plotly_dark", height=300)
+            lim = stats[p_id]['limite']
+            fig.add_hline(y=lim, line_color="red", line_dash="dot")
+            fig.add_hline(y=-lim, line_color="red", line_dash="dot")
+            fig.update_layout(title=f"Analyse Pompe {p_id} (Seuil: {lim:.2f}L)", template="plotly_dark", height=300)
             st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("📄 Journal de Diagnostic IA (Complet)"):
+        for msg in journal: st.write(msg)
