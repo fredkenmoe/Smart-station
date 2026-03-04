@@ -8,6 +8,9 @@ from sklearn.linear_model import TheilSenRegressor
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Smart-Station IA Energenic", layout="wide")
 
+# TITRE DU DASHBOARD
+st.title("🚀 Smart-Station IA Energenic : Monitoring & Maintenance Prédictive")
+
 def transformer_drive_en_direct(url):
     try:
         if "drive.google.com" in url:
@@ -21,10 +24,9 @@ URL_POMPES = transformer_drive_en_direct("https://drive.google.com/file/d/1H19rg
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 SEUIL_LEGAL = 0.5
-PROJECTION_GRAPHE_POINTS = 96 * 10 # 10 jours pour le visuel
-PROJECTION_ANALYSE_POINTS = 96 * 365 # 1 an pour le calcul d'échéance
+PROJECTION_GRAPHE_POINTS = 96 * 10 
+PROJECTION_ANALYSE_POINTS = 96 * 365 
 
-# --- CHARGEMENT ---
 @st.cache_data(ttl=600)
 def charger_donnees(url_c, url_p):
     try:
@@ -48,7 +50,6 @@ def charger_donnees(url_c, url_p):
         st.error(f"Erreur : {e}")
         return None, []
 
-# --- ANALYSE IA ---
 def analyser_ia_complet(df, cols_p):
     cusum_vals = {p: 0.0 for p in cols_p}
     for idx, row in df.iterrows():
@@ -76,7 +77,6 @@ def analyser_ia_complet(df, cols_p):
                 lim_actuelle = vol_p_total * (SEUIL_LEGAL / 100)
 
                 if len(y_val) > 192:
-                    # ANALYSE 5 INTERVALLES (10 JOURS) POUR COURBURE
                     pentes = []
                     for i in range(5):
                         fin = len(y_val) - (i * 192)
@@ -87,35 +87,41 @@ def analyser_ia_complet(df, cols_p):
                     v_actuelle = pentes[-1]
                     accel = (pentes[-1] - pentes[0]) / (4 * 192)
                     
-                    # PROJECTION VISUELLE (10 JOURS)
                     t_visu = np.arange(1, PROJECTION_GRAPHE_POINTS + 1)
                     graph_y = y_val[-1] + (v_actuelle * t_visu) + (0.5 * accel * (t_visu**2))
                     graph_times = [subset['Timestamp'].max() + pd.Timedelta(minutes=15*i) for i in range(1, PROJECTION_GRAPHE_POINTS + 1)]
                     
-                    # PROJECTION ANALYSE (1 AN) POUR CALCUL ÉCHÉANCE
                     t_an = np.arange(1, PROJECTION_ANALYSE_POINTS + 1)
                     y_an = y_val[-1] + (v_actuelle * t_an) + (0.5 * accel * (t_an**2))
-                    
-                    debit_m = subset[p_str].tail(96).mean()
-                    v_lim = debit_m * (SEUIL_LEGAL / 100)
+                    v_lim = subset[p_str].tail(96).mean() * (SEUIL_LEGAL / 100)
                     lim_futures = lim_actuelle + (t_an * v_lim)
                     
-                    # TROUVER INTERSECTION SUR 1 AN
                     jours_txt = "> 1 an"
                     collision = np.where(np.abs(y_an) >= lim_futures)[0]
                     if len(collision) > 0:
                         j = round((collision[0] * 15) / 1440, 1)
                         jours_txt = f"{j} jours" if j > 0 else "DÉPASSÉ"
 
-                    # DONNÉES GRAPHIQUE LIMITES (10j)
-                    lim_sup_visu = lim_actuelle + (t_visu * v_lim)
-                    lim_inf_visu = -lim_actuelle - (t_visu * v_lim)
-
                     diagnostics_preventifs[p_id] = {
                         "msg": "🔴 HORS-NORME" if "DÉP" in jours_txt else ("🟡 CRITIQUE" if "jours" in jours_txt and float(jours_txt.split()[0]) < 7 else "✅ SAIN"),
                         "jours": jours_txt, "graph_x": graph_times, "graph_y": graph_y,
-                        "lim_sup": lim_sup_visu, "lim_inf": lim_inf_visu, "accel": round(abs(pentes[-1]/pentes[0]) if pentes[0]!=0 else 1.0, 2)
+                        "lim_sup": lim_actuelle + (t_visu * v_lim), "lim_inf": -lim_actuelle - (t_visu * v_lim),
+                        "accel": round(abs(pentes[-1]/pentes[0]) if pentes[0]!=0 else 1.0, 2)
                     }
+
+        # --- RAPPORT IA & ANOMALIES (AVEC ÉCHÉANCE) ---
+        anomalies_brusques = subset[(subset['Anomaly_Score'] == -1) & (abs(subset['Ratio_Brut']) > SEUIL_LEGAL)]
+        for _, row_a in anomalies_brusques.iterrows():
+            if row_a['Ratio_Brut'] > 0.5: type_ano = "VOL / FUITE"
+            elif row_a['Ratio_Brut'] < -0.5: type_ano = "MÉTROLOGIE / PRÉSENCE D'AIR"
+            else: type_ano = "ANOMALIE NON CLASSIFIÉE"
+
+            # On lie l'anomalie à la pompe de la cuve qui a la pire échéance
+            p_ref = pompes_cuve[0]
+            echeance = diagnostics_preventifs.get(p_ref, {}).get('jours', 'N/A')
+            rapport_diagnostic.append(
+                f"🚨 {row_a['Timestamp'].strftime('%d/%m %H:%M')} | Cuve {id_c} : {type_ano} ({row_a['Ratio_Brut']:.2f}%) - Prévision Maintenance : {echeance}"
+            )
 
     return df, rapport_diagnostic, diagnostics_preventifs
 
@@ -124,37 +130,44 @@ data, p_ids = charger_donnees(URL_CUVES, URL_POMPES)
 if data is not None:
     data, journal, stats = analyser_ia_complet(data, p_ids)
     
-    st.sidebar.header("📋 Maintenance")
+    st.sidebar.header("📋 Prévisions Maintenance")
+    for p in sorted(p_ids):
+        s_p = stats.get(int(p), {"jours": "N/A", "msg": "N/A"})
+        st.sidebar.write(f"**Pompe {p}** : {s_p['msg']}")
+        st.sidebar.caption(f"Échéance : {s_p['jours']}")
+        st.sidebar.divider()
+
     c_id = st.sidebar.selectbox("Sélection Cuve", [1, 2])
     df_c = data[data['ID_Cuve'] == c_id].sort_values('Timestamp')
 
-    # GRAPHE RATIO (BRUT)
-    st.subheader(f"📊 Ratio Brut : Cuve {c_id}")
-    fig_r = go.Figure()
+    # GRAPHE RATIO
+    st.subheader(f"📊 Analyse Instantanée (Brut) : Cuve {c_id}")
+    fig_ratio = go.Figure()
     colors = np.where(df_c['Ratio_Brut'].abs() <= SEUIL_LEGAL, '#00ff88', '#ff4b4b')
-    fig_r.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c['Ratio_Brut'], mode='markers', marker=dict(color=colors, size=4)))
-    fig_r.add_hline(y=SEUIL_LEGAL, line_dash="dash", line_color="#ff4b4b")
-    fig_r.add_hline(y=-SEUIL_LEGAL, line_dash="dash", line_color="#ff4b4b")
-    fig_r.update_layout(template="plotly_dark", height=350)
-    st.plotly_chart(fig_r, use_container_width=True)
+    fig_ratio.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c['Ratio_Brut'], mode='markers', marker=dict(color=colors, size=4), name="Ratio"))
+    fig_ratio.add_hline(y=SEUIL_LEGAL, line_dash="dash", line_color="#ff4b4b")
+    fig_ratio.add_hline(y=-SEUIL_LEGAL, line_dash="dash", line_color="#ff4b4b")
+    fig_ratio.update_layout(template="plotly_dark", height=400)
+    st.plotly_chart(fig_ratio, use_container_width=True)
 
-    # GRAPHE CUSUM (PROJECTION COURBÉE 10J)
-    st.subheader("📈 CUSUM : Projection Courbe (Zoom 10j)")
+    # GRAPHE CUSUM
+    st.subheader("📈 Santé Métrologique & Projection Courbée (Zoom 10j)")
     for p_id in LIAISONS[c_id]:
         p_str = str(p_id)
         if f'CUSUM_P{p_str}' in df_c.columns:
             s_p = stats.get(p_id, {})
             fig = go.Figure()
             lim_h = df_c[p_str].cumsum() * (SEUIL_LEGAL / 100)
-            
             fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c[f'CUSUM_P{p_str}'], name="Réel", line=dict(color='#00d4ff', width=3)))
-            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=lim_h, name="Limites", line=dict(color='rgba(255,0,0,0.3)', dash='dot')))
-            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=-lim_h, showlegend=False, line=dict(color='rgba(255,0,0,0.3)', dash='dot')))
-
             if "graph_x" in s_p:
                 fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["graph_y"], name="Proj. Courbe", line=dict(color='yellow', dash='dot')))
                 fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_sup"], name="Lim. Future", line=dict(color='red', dash='dash')))
                 fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_inf"], showlegend=False, line=dict(color='red', dash='dash')))
-
-            fig.update_layout(template="plotly_dark", height=450, title=f"Pompe {p_id} | Échéance : {s_p.get('jours')} | Accel : x{s_p.get('accel')}")
+            fig.update_layout(template="plotly_dark", height=450, title=f"Pompe {p_id} | Accélération : x{s_p.get('accel')}")
             st.plotly_chart(fig, use_container_width=True)
+
+    # JOURNAL DES ANOMALIES
+    st.divider()
+    st.subheader("📄 Rapport Diagnostic IA & Journal des Anomalies")
+    for m in journal:
+        st.write(m)
