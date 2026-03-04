@@ -24,7 +24,7 @@ URL_POMPES = transformer_drive_en_direct("https://drive.google.com/file/d/1H19rg
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 SEUIL_LEGAL = 0.5
-ALPHA = 1.0 
+ALPHA = 0.99
 PROJECTION_NB_POINTS = 96 * 10 # Projection sur 10 jours (96 slots de 15min par jour)
 
 # --- CHARGEMENT ---
