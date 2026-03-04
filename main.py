@@ -24,7 +24,7 @@ URL_POMPES = transformer_drive_en_direct("https://drive.google.com/file/d/1H19rg
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 SEUIL_LEGAL = 0.5
-ALPHA = 0.99
+ALPHA = 0.95
 PROJECTION_NB_POINTS = 96 * 10 # Projection sur 10 jours (96 slots de 15min par jour)
 
 # --- CHARGEMENT ---
@@ -62,7 +62,7 @@ def analyser_ia_complet(df, cols_p):
         ecart_cuve_litres = row['Baisse_Cuve'] - row['Ventes_Totales']
         for p in cols_p:
             ratio_debit = row[p] / row['Ventes_Totales'] if row['Ventes_Totales'] > 0 else 0
-            cusum_vals[p] = cusum_vals[p] + (ecart_cuve_litres * ratio_debit)
+            cusum_vals[p] = (cusum_vals[p]*ALPHA) + (ecart_cuve_litres * ratio_debit)
             df.at[idx, f'CUSUM_P{p}'] = cusum_vals[p]
 
     model_if = IsolationForest(contamination=0.01, random_state=42)
