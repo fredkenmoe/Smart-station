@@ -21,7 +21,8 @@ URL_POMPES = transformer_drive_en_direct("https://drive.google.com/file/d/1H19rg
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 SEUIL_LEGAL = 0.5
-PROJECTION_NB_POINTS = 96 * 10 
+PROJECTION_GRAPHE_POINTS = 96 * 10 # 10 jours pour le visuel
+PROJECTION_ANALYSE_POINTS = 96 * 365 # 1 an pour le calcul d'échéance
 
 # --- CHARGEMENT ---
 @st.cache_data(ttl=600)
@@ -71,105 +72,89 @@ def analyser_ia_complet(df, cols_p):
             p_str = str(p_id)
             if f'CUSUM_P{p_str}' in subset.columns:
                 y_val = subset[f'CUSUM_P{p_str}'].values
-                vol_cum_reel = subset[p_str].sum()
-                limite_actuelle = vol_cum_reel * (SEUIL_LEGAL / 100)
+                vol_p_total = subset[p_str].sum()
+                lim_actuelle = vol_p_total * (SEUIL_LEGAL / 100)
 
-                if len(y_val) > 48:
-                    # 1. DETECTION DE COURBURE (COMPARAISON DE PENTES)
-                    # Pente Fond (48h)
-                    model_fond = TheilSenRegressor(random_state=42)
-                    n_fond = min(len(y_val), 192)
-                    model_fond.fit(np.arange(n_fond).reshape(-1, 1), y_val[-n_fond:])
-                    pente_fond = model_fond.coef_[0]
+                if len(y_val) > 192:
+                    # ANALYSE 5 INTERVALLES (10 JOURS) POUR COURBURE
+                    pentes = []
+                    for i in range(5):
+                        fin = len(y_val) - (i * 192)
+                        debut = max(0, fin - 192)
+                        model_ts = TheilSenRegressor(random_state=42).fit(np.arange(fin-debut).reshape(-1, 1), y_val[debut:fin])
+                        pentes.insert(0, model_ts.coef_[0])
 
-                    # Pente Alerte (12h - Réactivité)
-                    model_alerte = TheilSenRegressor(random_state=42)
-                    n_alerte = min(len(y_val), 48)
-                    model_alerte.fit(np.arange(n_alerte).reshape(-1, 1), y_val[-n_alerte:])
-                    pente_alerte = model_alerte.coef_[0]
-
-                    # On prend la pente la plus forte (inclinaison)
-                    pente_finale = pente_alerte if abs(pente_alerte) > abs(pente_fond) else pente_fond
-
-                    # 2. PROJECTION DE LA LIMITE DYNAMIQUE
-                    debit_moyen_15m = subset[p_str].tail(96).mean()
-                    vitesse_limite = debit_moyen_15m * (SEUIL_LEGAL / 100)
-
-                    # 3. CALCUL DE L'INTERSECTION
-                    vitesse_rapprochement = abs(pente_finale) - vitesse_limite
-                    if vitesse_rapprochement > 0:
-                        dist_restante = limite_actuelle - abs(y_val[-1])
-                        slots = dist_restante / vitesse_rapprochement
-                        j = round((max(0, slots) * 15) / 1440, 1)
+                    v_actuelle = pentes[-1]
+                    accel = (pentes[-1] - pentes[0]) / (4 * 192)
+                    
+                    # PROJECTION VISUELLE (10 JOURS)
+                    t_visu = np.arange(1, PROJECTION_GRAPHE_POINTS + 1)
+                    graph_y = y_val[-1] + (v_actuelle * t_visu) + (0.5 * accel * (t_visu**2))
+                    graph_times = [subset['Timestamp'].max() + pd.Timedelta(minutes=15*i) for i in range(1, PROJECTION_GRAPHE_POINTS + 1)]
+                    
+                    # PROJECTION ANALYSE (1 AN) POUR CALCUL ÉCHÉANCE
+                    t_an = np.arange(1, PROJECTION_ANALYSE_POINTS + 1)
+                    y_an = y_val[-1] + (v_actuelle * t_an) + (0.5 * accel * (t_an**2))
+                    
+                    debit_m = subset[p_str].tail(96).mean()
+                    v_lim = debit_m * (SEUIL_LEGAL / 100)
+                    lim_futures = lim_actuelle + (t_an * v_lim)
+                    
+                    # TROUVER INTERSECTION SUR 1 AN
+                    jours_txt = "> 1 an"
+                    collision = np.where(np.abs(y_an) >= lim_futures)[0]
+                    if len(collision) > 0:
+                        j = round((collision[0] * 15) / 1440, 1)
                         jours_txt = f"{j} jours" if j > 0 else "DÉPASSÉ"
-                    else:
-                        jours_txt = "Stable > 1 an"
 
-                    # 4. PREPARATION GRAPHIQUE
-                    idx_futur = np.arange(PROJECTION_NB_POINTS)
-                    proj_y = y_val[-1] + (idx_futur * pente_finale)
-                    proj_lim_sup = limite_actuelle + (idx_futur * vitesse_limite)
-                    proj_lim_inf = -limite_actuelle - (idx_futur * vitesse_limite)
-                    graph_times = [subset['Timestamp'].max() + pd.Timedelta(minutes=15*i) for i in range(1, PROJECTION_NB_POINTS + 1)]
+                    # DONNÉES GRAPHIQUE LIMITES (10j)
+                    lim_sup_visu = lim_actuelle + (t_visu * v_lim)
+                    lim_inf_visu = -lim_actuelle - (t_visu * v_lim)
 
                     diagnostics_preventifs[p_id] = {
-                        "msg": "🔴 CRITIQUE" if "jours" in jours_txt and float(jours_txt.split()[0]) < 7 else "✅ SAIN",
-                        "jours": jours_txt, "proj_x": graph_times, "proj_y": proj_y,
-                        "lim_sup": proj_lim_sup, "lim_inf": proj_lim_inf
+                        "msg": "🔴 HORS-NORME" if "DÉP" in jours_txt else ("🟡 CRITIQUE" if "jours" in jours_txt and float(jours_txt.split()[0]) < 7 else "✅ SAIN"),
+                        "jours": jours_txt, "graph_x": graph_times, "graph_y": graph_y,
+                        "lim_sup": lim_sup_visu, "lim_inf": lim_inf_visu, "accel": round(abs(pentes[-1]/pentes[0]) if pentes[0]!=0 else 1.0, 2)
                     }
-
-        # RAPPORT
-        anomalies = subset[(subset['Anomaly_Score'] == -1) & (abs(subset['Ratio_Brut']) > SEUIL_LEGAL)]
-        for _, row in anomalies.iterrows():
-            type_a = "FUITE/VOL" if row['Ratio_Brut'] > 0 else "METROLOGIE"
-            echeance = diagnostics_preventifs.get(pompes_cuve[0], {}).get('jours', 'N/A')
-            rapport_diagnostic.append(f"🚨 CUVE {id_c} | {row['Timestamp'].strftime('%d/%m %H:%M')} : {type_a} ({row['Ratio_Brut']:.2f}%) - Maintenance : {echeance}")
 
     return df, rapport_diagnostic, diagnostics_preventifs
 
-# --- AFFICHAGE ---
+# --- DASHBOARD ---
 data, p_ids = charger_donnees(URL_CUVES, URL_POMPES)
 if data is not None:
     data, journal, stats = analyser_ia_complet(data, p_ids)
     
-    # Sidebar
-    st.sidebar.header("📋 État de la Station")
-    for p in sorted(p_ids):
-        s = stats.get(int(p), {"jours": "N/A", "msg": "N/A"})
-        st.sidebar.write(f"**Pompe {p}** : {s['jours']}")
-    
+    st.sidebar.header("📋 Maintenance")
     c_id = st.sidebar.selectbox("Sélection Cuve", [1, 2])
-    df_c = data[data['ID_Cuve'] == c_id]
+    df_c = data[data['ID_Cuve'] == c_id].sort_values('Timestamp')
 
-    # Metrics
-    cols = st.columns(len(LIAISONS[c_id]))
-    for i, p_id in enumerate(LIAISONS[c_id]):
-        with cols[i]:
-            info = stats.get(p_id, {"msg": "N/A", "jours": "N/A"})
-            st.metric(f"Pompe {p_id}", info['msg'], info['jours'], delta_color="inverse")
+    # GRAPHE RATIO (BRUT)
+    st.subheader(f"📊 Ratio Brut : Cuve {c_id}")
+    fig_r = go.Figure()
+    colors = np.where(df_c['Ratio_Brut'].abs() <= SEUIL_LEGAL, '#00ff88', '#ff4b4b')
+    fig_r.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c['Ratio_Brut'], mode='markers', marker=dict(color=colors, size=4)))
+    fig_r.add_hline(y=SEUIL_LEGAL, line_dash="dash", line_color="#ff4b4b")
+    fig_r.add_hline(y=-SEUIL_LEGAL, line_dash="dash", line_color="#ff4b4b")
+    fig_r.update_layout(template="plotly_dark", height=350)
+    st.plotly_chart(fig_r, use_container_width=True)
 
-    # Graphes CUSUM
-    st.subheader("📈 Détection d'inclinaison et Intersection Limite")
+    # GRAPHE CUSUM (PROJECTION COURBÉE 10J)
+    st.subheader("📈 CUSUM : Projection Courbe (Zoom 10j)")
     for p_id in LIAISONS[c_id]:
         p_str = str(p_id)
         if f'CUSUM_P{p_str}' in df_c.columns:
             s_p = stats.get(p_id, {})
             fig = go.Figure()
-            lim = df_c[p_str].cumsum() * (SEUIL_LEGAL / 100)
+            lim_h = df_c[p_str].cumsum() * (SEUIL_LEGAL / 100)
             
-            # Réel
-            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c[f'CUSUM_P{p_str}'], name="CUSUM", line=dict(color='#00d4ff')))
-            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=lim, name="Limite", line=dict(color='red', dash='dot')))
-            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=-lim, showlegend=False, line=dict(color='red', dash='dot')))
+            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c[f'CUSUM_P{p_str}'], name="Réel", line=dict(color='#00d4ff', width=3)))
+            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=lim_h, name="Limites", line=dict(color='rgba(255,0,0,0.3)', dash='dot')))
+            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=-lim_h, showlegend=False, line=dict(color='rgba(255,0,0,0.3)', dash='dot')))
 
-            # Projection
-            if "proj_x" in s_p:
-                fig.add_trace(go.Scatter(x=s_p["proj_x"], y=s_p["proj_y"], name="Projection IA", line=dict(color='yellow', dash='dash')))
-                fig.add_trace(go.Scatter(x=s_p["proj_x"], y=s_p["lim_sup"], name="Limite Future", line=dict(color='rgba(255,0,0,0.2)', dash='dash')))
-                fig.add_trace(go.Scatter(x=s_p["proj_x"], y=s_p["lim_inf"], showlegend=False, line=dict(color='rgba(255,0,0,0.2)', dash='dash')))
+            if "graph_x" in s_p:
+                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["graph_y"], name="Proj. Courbe", line=dict(color='yellow', dash='dot')))
+                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_sup"], name="Lim. Future", line=dict(color='red', dash='dash')))
+                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_inf"], showlegend=False, line=dict(color='red', dash='dash')))
 
-            fig.update_layout(template="plotly_dark", height=450, title=f"Pompe {p_id}")
+            fig.update_layout(template="plotly_dark", height=450, title=f"Pompe {p_id} | Échéance : {s_p.get('jours')} | Accel : x{s_p.get('accel')}")
             st.plotly_chart(fig, use_container_width=True)
-
-    with st.expander("📄 Journal détaillé des anomalies"):
-        for m in journal: st.write(m)
