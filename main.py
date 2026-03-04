@@ -11,13 +11,14 @@ st.set_page_config(page_title="Smart-Station IA Energenic", layout="wide")
 def transformer_drive_en_direct(url):
     try:
         if "drive.google.com" in url:
+            # Extraction propre de l'ID du fichier Google Drive
             file_id = url.split("/d/")[1].split("/")[0]
             return f"https://drive.google.com/uc?export=download&id={file_id}"
         return url
     except Exception:
         return url
 
-# Liens Dynamiques
+# Liens Dynamiques vers Google Drive
 URL_CUVES = transformer_drive_en_direct("https://drive.google.com/file/d/1BxdKjJB7Difw4vfe4OKylMV_b5PAGUgL/view?usp=sharing")
 URL_POMPES = transformer_drive_en_direct("https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing")
 
@@ -48,15 +49,16 @@ def charger_donnees(url_c, url_p):
         df['Ratio_Lisse'] = df.groupby('ID_Cuve')['Ratio_Brut'].transform(lambda x: x.rolling(window=8, min_periods=1).mean())
         return df, cols_p
     except Exception as e:
-        st.error(f"Erreur de lecture : {e}")
+        # En cas d'erreur tokenizing ou forbidden
+        st.error(f"Erreur de lecture : {e}. Vérifiez le partage public du Drive.")
         return None, []
 
-# --- COEUR DE L'IA (NON SIMPLIFIÉ) ---
+# --- COEUR DE L'IA (LOGIQUE INTÉGRALE) ---
 def analyser_ia_complet(df, cols_p):
-    # 2. CUSUM par pompe (Accumulation en LITRES)
     pompes_ids = [int(c) for c in cols_p]
     cusum_vals = {p: 0.0 for p in pompes_ids}
     
+    # 2. CUSUM par pompe (LITRES)
     for idx, row in df.iterrows():
         ecart_cuve_litres = row['Baisse_Cuve'] - row['Ventes_Totales']
         for p in pompes_ids:
@@ -65,7 +67,7 @@ def analyser_ia_complet(df, cols_p):
             cusum_vals[p] = (ALPHA * cusum_vals[p]) + (erreur_p_litres)
             df.at[idx, f'CUSUM_P{p}'] = cusum_vals[p]
 
-    # 3. Isolation Forest pour anomalies brusques
+    # 3. Isolation Forest
     model_if = IsolationForest(contamination=0.01, random_state=42)
     df['Anomaly_Score'] = model_if.fit_predict(df[['Ratio_Lisse']])
     
@@ -75,15 +77,15 @@ def analyser_ia_complet(df, cols_p):
     for id_c, pompes_cuve in LIAISONS.items():
         subset = df[df['ID_Cuve'] == id_c].sort_values('Timestamp')
 
-        # Analyse des anomalies brusques
+        # Analyse des anomalies brusques (Vol / Fuite / Métrologie)
         anomalies = subset[(subset['Anomaly_Score'] == -1) & (abs(subset['Ratio_Brut']) > SEUIL_LEGAL)]
         for _, row_a in anomalies.iterrows():
-            if row_a['Ratio_Brut'] > 0.5: type_ano = "🚨 VOL / FUITE POSSIBLE"
-            elif row_a['Ratio_Brut'] < -0.5: type_ano = "🌬️ MÉTROLOGIE / PRÉSENCE D'AIR"
-            else: type_ano = "⚠️ ANOMALIE NON CLASSÉE"
+            if row_a['Ratio_Brut'] > 0.5: type_ano = "🚨 VOL / FUITE"
+            elif row_a['Ratio_Brut'] < -0.5: type_ano = "🌬️ MÉTROLOGIE / AIR"
+            else: type_ano = "⚠️ ANOMALIE"
             rapport_diagnostic.append(f"{type_ano} ({row_a['Ratio_Brut']:.2f}%) le {row_a['Timestamp'].strftime('%d/%m %H:%M')}")
 
-        # 4. Projection et Santé par Pompe
+        # 4. Projection Theil-Sen
         for p_id in pompes_cuve:
             col_cusum = f'CUSUM_P{p_id}'
             y = subset[col_cusum].values
@@ -98,19 +100,23 @@ def analyser_ia_complet(df, cols_p):
                 future_x = np.arange(len(y), len(y) + PROJECTION_INTERVALLES).reshape(-1, 1)
                 future_y = model_ts.predict(future_x)
                 
-                # Calcul de l'échéance
-                idx_dep = np.where(abs(future_y) > limite_Litre := limite_litres)[0]
+                # CORRECTION SYNTAXE : On sépare l'assignation de la condition
+                idx_dep = np.where(abs(future_y) > limite_litres)[0]
+                
                 if abs(y[-1]) > limite_litres:
                     msg, color, status_txt = "🔴 HORS-NORME", "red", "LIMITE DÉPASSÉE"
                 elif len(idx_dep) > 0:
                     jours = round((idx_dep[0] * 15) / 1440, 1)
-                    msg, color = (f"🟡 CRITIQUE : {jours}j", "orange") if jours < 30 else (f"🟡 PRÉVISION : {jours}j", "yellow")
+                    if jours < 30:
+                        msg, color = f"🟡 CRITIQUE : {jours}j", "orange"
+                    else:
+                        msg, color = f"🟡 PRÉVISION : {jours}j", "yellow"
                     status_txt = f"Dérive prévue dans {jours} jours"
                 else:
                     msg, color, status_txt = "✅ SANTÉ : OK", "#00d4ff", "Stable > 1 an"
                 
                 stats_maintenance[p_id] = {"msg": msg, "color": color, "futur": future_y, "limite": limite_litres, "status": status_txt}
-                rapport_diagnostic.append(f"📊 Pompe {p_id} : {status_txt} (Erreur: {y[-1]:.2f}L / Limite: {limite_litres:.2f}L)")
+                rapport_diagnostic.append(f"📊 Pompe {p_id} : {status_txt} (Erreur: {y[-1]:.2f}L)")
 
     return df, rapport_diagnostic, stats_maintenance
 
@@ -125,11 +131,12 @@ if data is not None:
     cols = st.columns(len(LIAISONS[c_id]))
     for i, p_id in enumerate(LIAISONS[c_id]):
         with cols[i]:
-            s = stats.get(p_id, {"msg": "N/A", "color": "grey"})
+            s = stats.get(p_id, {"msg": "Calcul...", "color": "grey"})
             st.markdown(f"**Pompe {p_id}**")
             st.subheader(f":{s['color']}[{s['msg']}]")
 
     st.divider()
+    # Graphiques CUSUM & Projection
     for p_id in LIAISONS[c_id]:
         if p_id in stats:
             fig = go.Figure()
@@ -146,5 +153,5 @@ if data is not None:
             fig.update_layout(title=f"Analyse Pompe {p_id} (Seuil: {lim:.2f}L)", template="plotly_dark", height=300)
             st.plotly_chart(fig, use_container_width=True)
 
-    with st.expander("📄 Journal de Diagnostic IA (Complet)"):
+    with st.expander("📄 Journal de Diagnostic IA"):
         for msg in journal: st.write(msg)
