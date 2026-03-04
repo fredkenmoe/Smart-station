@@ -22,8 +22,8 @@ URL_POMPES = transformer_drive_en_direct("https://drive.google.com/file/d/1H19rg
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 SEUIL_LEGAL = 0.5
-ALPHA = 1.0  # MODIFIÉ : 1.0 pour un CUSUM brut (non lissé) selon ton souhait
-PROJECTION_INTERVALLES = 35040  # 1 AN EXACT (4 * 24 * 365)
+ALPHA = 1.0  # CUSUM BRUT (non lissé) pour voir toutes les variations
+PROJECTION_INTERVALLES = 35040  # 1 AN EXACT
 
 # --- CHARGEMENT ---
 @st.cache_data(ttl=600)
@@ -55,7 +55,6 @@ def charger_donnees(url_c, url_p):
 
 # --- ANALYSE IA COMPLÈTE ---
 def analyser_ia_complet(df, cols_p):
-    # 1. Calcul CUSUM (Accumulation en LITRES)
     cusum_vals = {p: 0.0 for p in cols_p}
     for idx, row in df.iterrows():
         ecart_cuve_litres = row['Baisse_Cuve'] - row['Ventes_Totales']
@@ -64,7 +63,6 @@ def analyser_ia_complet(df, cols_p):
             cusum_vals[p] = (ALPHA * cusum_vals[p]) + (ecart_cuve_litres * ratio_debit)
             df.at[idx, f'CUSUM_P{p}'] = cusum_vals[p]
 
-    # 2. IA : Isolation Forest pour anomalies brusques
     model_if = IsolationForest(contamination=0.01, random_state=42)
     df['Anomaly_Score'] = model_if.fit_predict(df[['Ratio_Lisse']])
     
@@ -75,50 +73,32 @@ def analyser_ia_complet(df, cols_p):
         subset = df[df['ID_Cuve'] == id_c].sort_values('Timestamp')
         if subset.empty: continue
 
-        # --- TON BLOC DE FILTRAGE +/- 0.5% ---
-        anomalies_brusques = subset[(subset['Anomaly_Score'] == -1) & (abs(subset['Ratio_Brut']) > SEUIL_LEGAL)]
-        for _, row_a in anomalies_brusques.iterrows():
-            if row_a['Ratio_Brut'] > 0.5:
-                type_ano = "VOL / FUITE"
-            elif row_a['Ratio_Brut'] < -0.5:
-                type_ano = "MÉTROLOGIE / PRÉSENCE D'AIR"
-            else:
-                type_ano = "ANOMALIE NON CLASSIFIÉE"
-            
-            rapport_diagnostic.append(
-                f"🚨 {row_a['Timestamp'].strftime('%d/%m %H:%M')} : {type_ano} ({row_a['Ratio_Brut']:.2f}%)"
-            )
-
-        # --- PROJECTION SUR 1 AN ---
         for p_id in pompes_cuve:
             p_str = str(p_id)
             if f'CUSUM_P{p_str}' in subset.columns:
                 y = subset[f'CUSUM_P{p_str}'].values
                 x = np.arange(len(y)).reshape(-1, 1)
-                
                 vol_p_total = subset[p_str].sum()
-                limite_litres = vol_p_total * (SEUIL_LEGAL / 100)
+                limite_p_litres = vol_p_total * (SEUIL_LEGAL / 100)
 
                 if len(y) > 20:
                     model_ts = TheilSenRegressor(random_state=42)
                     model_ts.fit(x, y)
-                    
                     futur_x = np.arange(len(y), len(y) + PROJECTION_INTERVALLES).reshape(-1, 1)
                     futur_y = model_ts.predict(futur_x)
                     
-                    idx_dep = np.where(abs(futur_y) > limite_litres)[0]
-                    if abs(y[-1]) > limite_litres:
-                        msg, color, status_txt = "🔴 HORS-NORME", "red", "LIMITE DÉPASSÉE"
+                    idx_dep = np.where(abs(futur_y) > limite_p_litres)[0]
+                    if abs(y[-1]) > limite_p_litres:
+                        msg, color, status_txt = "🔴 HORS-NORME", "red", "DÉPASSEMENT"
                     elif len(idx_dep) > 0:
                         jours = round((idx_dep[0] * 15) / 1440, 1)
-                        msg, color = (f"🟡 CRITIQUE : {jours}j", "orange") if jours < 30 else (f"🟡 PRÉVISION : {jours}j", "yellow")
-                        status_txt = f"Dérive prévue dans {jours} jours"
+                        msg, color = "🟡 PRÉVISION", "orange"
+                        status_txt = f"{jours} jours restants"
                     else:
-                        msg, color, status_txt = "✅ SANTÉ : OK", "#00d4ff", "Stable > 1 an"
+                        msg, color, status_txt = "✅ OK", "#00d4ff", "Stable > 1 an"
                     
-                    # On stocke status_txt pour l'affichage dashboard
-                    diagnostics_preventifs[p_id] = {"msg": msg, "color": color, "futur": futur_y, "limite": limite_litres, "echeance": status_txt}
-                    rapport_diagnostic.append(f"📊 Pompe {p_id} [Cuve {id_c}] : {status_txt} (Erreur: {y[-1]:.2f}L)")
+                    diagnostics_preventifs[p_id] = {"msg": msg, "color": color, "futur": futur_y, "jours": status_txt}
+                    rapport_diagnostic.append(f"📊 Pompe {p_id} [Cuve {id_c}] : {status_txt}")
 
     return df, rapport_diagnostic, diagnostics_preventifs
 
@@ -129,34 +109,47 @@ data, p_ids = charger_donnees(URL_CUVES, URL_POMPES)
 if data is not None:
     data, journal, stats = analyser_ia_complet(data, p_ids)
     c_id = st.sidebar.selectbox("Sélection Cuve", [1, 2])
-    
-    cols = st.columns(len(LIAISONS[c_id]))
+    df_c = data[data['ID_Cuve'] == c_id].sort_values('Timestamp')
+
+    # --- INDICATEURS HAUT DE PAGE ---
+    cols_header = st.columns(len(LIAISONS[c_id]))
     for i, p_id in enumerate(LIAISONS[c_id]):
-        with cols[i]:
-            s = stats.get(p_id, {"msg": "Données insuffisantes", "color": "grey", "echeance": ""})
+        with cols_header[i]:
+            s = stats.get(p_id, {"msg": "N/A", "color": "white", "jours": "Pas de données"})
             st.markdown(f"### Pompe {p_id}")
             st.subheader(f":{s['color']}[{s['msg']}]")
-            if s['echeance']:
-                st.info(f"📅 {s['echeance']}") # Affichage des jours restants ici
+            st.write(f"**Echéance :** {s['jours']}")
 
     st.divider()
-    for p_id in LIAISONS[c_id]:
-        if p_id in stats:
-            fig = go.Figure()
-            df_v = data[data['ID_Cuve'] == c_id]
-            fig.add_trace(go.Scatter(x=df_v['Timestamp'], y=df_v[f'CUSUM_P{p_id}'], name="CUSUM Réel (L)", line=dict(width=3)))
-            
-            last_t = df_v['Timestamp'].max()
-            futur_t = [last_t + pd.Timedelta(minutes=15*j) for j in range(1000)]
-            fig.add_trace(go.Scatter(x=futur_t, y=stats[p_id]['futur'][:1000], name="Projection 15j", line=dict(dash='dash', color='yellow')))
-            
-            lim = stats[p_id]['limite']
-            fig.add_hline(y=lim, line_color="red", line_dash="dot")
-            fig.add_hline(y=-lim, line_color="red", line_dash="dot")
-            
-            # Agrandissement du graphe (height=500)
-            fig.update_layout(title=f"Analyse CUSUM Pompe {p_id} (Seuil: {lim:.2f}L)", template="plotly_dark", height=500)
-            st.plotly_chart(fig, use_container_width=True)
 
-    with st.expander("📄 Journal détaillé des anomalies (IA + Métrologie)"):
+    # --- 1. GRAPHIQUE RATIO (CUVE) ---
+    st.subheader(f"📊 Ratio de Réconciliation : Cuve {c_id}")
+    fig_ratio = go.Figure()
+    colors = np.where(df_c['Ratio_Brut'].abs() <= SEUIL_LEGAL, '#00ff88', '#ff4b4b')
+    fig_ratio.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c['Ratio_Brut'], mode='lines+markers', marker=dict(color=colors, size=5), name="Ratio Brut"))
+    fig_ratio.add_hline(y=SEUIL_LEGAL, line_dash="dash", line_color="#ff4b4b")
+    fig_ratio.add_hline(y=-SEUIL_LEGAL, line_dash="dash", line_color="#ff4b4b")
+    fig_ratio.update_layout(template="plotly_dark", height=400)
+    st.plotly_chart(fig_ratio, use_container_width=True)
+
+    # --- 2 & 3. GRAPHIQUES CUSUM (POMPES) ---
+    st.subheader(f"📈 Santé Métrologique Individuelle (CUSUM)")
+    
+    for p_id in LIAISONS[c_id]:
+        p_str = str(p_id)
+        if f'CUSUM_P{p_str}' in df_c.columns:
+            fig_p = go.Figure()
+            # Tunnel personnel dynamique
+            vol_p_cumule = df_c[p_str].cumsum()
+            limite_p_litres = vol_p_cumule * (SEUIL_LEGAL / 100)
+
+            fig_p.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c[f'CUSUM_P{p_str}'], name="Erreur (L)", line=dict(color='#00d4ff', width=3)))
+            fig_p.add_trace(go.Scatter(x=df_c['Timestamp'], y=limite_p_litres, name="Limite +", line=dict(color='rgba(255, 75, 75, 0.5)', dash='dot')))
+            fig_p.add_trace(go.Scatter(x=df_c['Timestamp'], y=-limite_p_litres, name="Limite -", line=dict(color='rgba(255, 75, 75, 0.5)', dash='dot'), fill='tonexty', fillcolor='rgba(255, 75, 75, 0.05)'))
+
+            # Agrandissement à 500px
+            fig_p.update_layout(title=f"Pompe {p_id} : Dérive Cumulative Personnalisée", template="plotly_dark", height=500)
+            st.plotly_chart(fig_p, use_container_width=True)
+
+    with st.expander("📄 Journal détaillé des anomalies & Prévisions"):
         for m in journal: st.write(m)
