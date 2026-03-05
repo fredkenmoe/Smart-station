@@ -52,24 +52,38 @@ LIAISONS = {1: [1, 3], 2: [2, 4]}
 @st.cache_data(ttl=600)
 def charger_donnees(url_c, url_p):
     try:
-        df_c = pd.read_csv(url_c)
-        df_p = pd.read_csv(url_p)
-        df_c['Timestamp'] = pd.to_datetime(df_c['Date'] + ' ' + df_c['Heure'], dayfirst=True)
-        df_p['Timestamp'] = pd.to_datetime(df_p['Date'] + ' ' + df_p['Heure'], dayfirst=True)
+        # --- MODIFICATION ICI : On lit en Excel car tes liens sont des fichiers .xlsx ---
+        df_c = pd.read_excel(url_c)
+        df_p = pd.read_excel(url_p)
+        
+        # Nettoyage des colonnes (pour éviter les espaces vides)
+        df_c.columns = df_c.columns.str.strip()
+        df_p.columns = df_p.columns.str.strip()
+
+        # Le reste du code reste identique
+        df_c['Timestamp'] = pd.to_datetime(df_c['Date'].astype(str) + ' ' + df_c['Heure'].astype(str), dayfirst=True)
+        df_p['Timestamp'] = pd.to_datetime(df_p['Date'].astype(str) + ' ' + df_p['Heure'].astype(str), dayfirst=True)
+        
         df_p['Slot'] = df_p['Timestamp'].dt.floor('15min') + pd.Timedelta(minutes=15)
         df_p['ID_Pompe'] = df_p['ID_Pompe'].astype(str)
+        
         p_pivot = df_p.pivot_table(index=['ID_Cuve', 'Slot'], columns='ID_Pompe', values='Volume_Vendu', aggfunc='sum').fillna(0).reset_index()
+        
         df_c = df_c.sort_values(['ID_Cuve', 'Timestamp'])
         df_c['Baisse_Cuve'] = df_c.groupby('ID_Cuve')['Volume_L'].shift(1) - df_c['Volume_L']
+        
         df = pd.merge(df_c, p_pivot, left_on=['ID_Cuve', 'Timestamp'], right_on=['ID_Cuve', 'Slot'], how='inner')
+        
         cols_p = [c for c in p_pivot.columns if c not in ['ID_Cuve', 'Slot']]
         df['Ventes_Totales'] = df[cols_p].sum(axis=1)
+        
         df = df[(df['Baisse_Cuve'] >= 0) & (df['Ventes_Totales'] > 0)].copy()
         df['Ratio_Brut'] = ((df['Baisse_Cuve'] - df['Ventes_Totales']) / df['Ventes_Totales']) * 100
         df['Ratio_Lisse'] = df.groupby('ID_Cuve')['Ratio_Brut'].transform(lambda x: x.rolling(window=5, min_periods=1).mean())
+        
         return df, cols_p
     except Exception as e:
-        st.error(f"Erreur : {e}")
+        st.error(f"Erreur de lecture : {e}")
         return None, []
 
 def analyser_ia_complet(df, cols_p):
