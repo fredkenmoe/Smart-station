@@ -21,25 +21,31 @@ SEUIL_LEGAL = 0.5
 import pandas as pd
 import base64
 
+import base64
+
 def preparer_lien_cloud(url):
-    # --- CAS GOOGLE DRIVE ---
+    # --- CAS 1 : GOOGLE DRIVE ---
     if "drive.google.com" in url:
-        id_fichier = url.split("/d/")[1].split("/")[0]
-        return f"https://drive.google.com/uc?export=download&id={id_fichier}"
-    
-    # --- CAS SHAREPOINT (Ta méthode préférée remise à jour) ---
-    elif "sharepoint.com" in url:
-        # On nettoie l'URL pour forcer le mode "Stream de données"
-        url_propre = url.replace(":x:/g/", ":x:/g/").split("?")[0] 
-        # Note : On garde /g/ ou /s/ mais on ajoute impérativement ?download=1
-        return f"{url_propre}?download=1"
+        try:
+            id_fichier = url.split("/d/")[1].split("/")[0]
+            return f"https://drive.google.com/uc?export=download&id={id_fichier}"
+        except:
+            return url
+
+    # --- CAS 2 : ONEDRIVE / SHAREPOINT (1drv.ms ou sharepoint.com) ---
+    elif "1drv.ms" in url or "sharepoint.com" in url:
+        # Cette méthode transforme n'importe quel lien de partage Microsoft en lien de téléchargement direct
+        # C'est la méthode officielle "Microsoft Graph"
+        b64_url = base64.b64encode(bytes(url, "utf-8")).decode("utf-8")
+        res_url = "u!" + b64_url.replace("/", "_").replace("+", "-").rstrip("=")
+        return f"https://api.onedrive.com/v1.shares/{res_url}/root/content"
 
     return url
 
 # --- UTILISATION ---
-
-URL_CUVES = preparer_lien_cloud("https://energenic.sharepoint.com/:x:/g/IQAmSmmAmijFS4UyM3FNpCvbAefpRb8WeRcwMaKNOLIXNHQ?e=T9CUbJ")
-URL_POMPES = preparer_lien_cloud("https://energenic.sharepoint.com/:x:/g/IQAI_nCblmrdQ6pEC2XrRn1lAd2q_vDxuMqosdVPAZwXTko?e=GpiehJ")
+# Tes liens fonctionneront maintenant parfaitement !
+URL_CUVES = preparer_lien_cloud("https://1drv.ms/x/c/084ded698d405b54/IQCNUBR1ojs1T5AI52mZogl5ARUw5tA8E5AdOjYaNEWo5Eg?e=XdlD0M")
+URL_POMPES = preparer_lien_cloud("https://1drv.ms/x/c/084ded698d405b54/IQAkYx06NgHeRam1wozkhh0_AbdIazatXP813L1QE5lJDh0?e=kJFyBm")
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 
