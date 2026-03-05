@@ -20,7 +20,7 @@ PROJECTION_ANALYSE_POINTS = POINTS_PAR_JOUR * 365
 SEUIL_LEGAL = 0.5
 
 # --- FONCTION DE CONVERSION DE LIEN (CORRIGÉE) ---
-ddef preparer_lien_cloud(url):
+def preparer_lien_cloud(url):
     # On nettoie l'URL de tout paramètre existant (comme ?e=xxxx)
     url_base = url.split("?")[0]
     # On force le mode téléchargement direct
