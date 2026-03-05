@@ -40,8 +40,8 @@ def preparer_lien_cloud(url):
     return url
 
 # --- UTILISATION DES LIENS ---
-URL_CUVES = preparer_lien_cloud("https://1drv.ms/x/c/084ded698d405b54/IQCNUBR1ojs1T5AI52mZogl5ARUw5tA8E5AdOjYaNEWo5Eg?e=xGagpz")
-URL_POMPES = preparer_lien_cloud("https://1drv.ms/x/c/084ded698d405b54/IQAkYx06NgHeRam1wozkhh0_AbdIazatXP813L1QE5lJDh0?e=5I7xmZ")
+URL_CUVES = preparer_lien_cloud(""https://1drv.ms/x/c/084ded698d405b54/IQCNUBR1ojs1T5AI52mZogl5ARUw5tA8E5AdOjYaNEWo5Eg?e=xGagpz"")
+URL_POMPES = preparer_lien_cloud(""https://1drv.ms/x/c/084ded698d405b54/IQAkYx06NgHeRam1wozkhh0_AbdIazatXP813L1QE5lJDh0?e=5I7xmZ"")
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 
