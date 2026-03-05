@@ -48,7 +48,7 @@ def obtenir_lien_direct(url):
         return url
 # --- UTILISATION ---
 # Copie tes liens de partage Energenic ou Google ici
-URL_CUVES_BRUT = "https://energenic.sharepoint.com/:x:/g/IQAmSmmAmijFS4UyM3FNpCvbAefpRb8WeRcwMaKNOLIXNHQ?e=T9CUbJ" 
+URL_CUVES_BRUT = "https://1drv.ms/x/c/084ded698d405b54/IQCNUBR1ojs1T5AI52mZogl5ARUw5tA8E5AdOjYaNEWo5Eg?e=ep0cJ2" 
 URL_POMPES_BRUT = "https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing"
 
 URL_CUVES = obtenir_lien_direct(URL_CUVES_BRUT)
