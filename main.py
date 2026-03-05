@@ -20,24 +20,11 @@ PROJECTION_ANALYSE_POINTS = POINTS_PAR_JOUR * 365
 SEUIL_LEGAL = 0.5
 
 # --- FONCTION DE CONVERSION DE LIEN (CORRIGÉE) ---
-def preparer_lien_cloud(url):
-    # --- CAS 1 : GOOGLE DRIVE ---
-    if "drive.google.com" in url:
-        try:
-            id_fichier = url.split("/d/")[1].split("/")[0]
-            return f"https://drive.google.com/uc?export=download&id={id_fichier}"
-        except: return url
-
-    # --- CAS 2 : ONEDRIVE (1drv.ms) ---
-    # Cette méthode est souvent plus robuste que le Base64 pour les liens courts
-    elif "1drv.ms" in url:
-        # On enlève tout ce qu'il y a après le '?' pour avoir le lien propre
-        url_propre = url.split("?")[0]
-        # On remplace l'affichage par le téléchargement direct
-        return url_propre.replace("1drv.ms/x/c/", "1drv.ms/x/c/").replace("1drv.ms/", "1drv.ms/download.aspx?resid=")
-        # Note : Si ça échoue encore, utilise la méthode ci-dessous qui est radicale
-    
-    return url
+ddef preparer_lien_cloud(url):
+    # On nettoie l'URL de tout paramètre existant (comme ?e=xxxx)
+    url_base = url.split("?")[0]
+    # On force le mode téléchargement direct
+    return f"{url_base}?download=1"
 # --- UTILISATION DES LIENS ---
 URL_CUVES = preparer_lien_cloud("https://1drv.ms/x/c/084ded698d405b54/IQCNUBR1ojs1T5AI52mZogl5ARUw5tA8E5AdOjYaNEWo5Eg?e=xGagpz")
 URL_POMPES = preparer_lien_cloud("https://1drv.ms/x/c/084ded698d405b54/IQAkYx06NgHeRam1wozkhh0_AbdIazatXP813L1QE5lJDh0?e=5I7xmZ")
