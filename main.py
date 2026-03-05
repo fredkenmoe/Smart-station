@@ -8,8 +8,15 @@ from sklearn.linear_model import TheilSenRegressor
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Smart-Station IA Energenic", layout="wide")
 
-# TITRE DU DASHBOARD
 st.title("🚀 Smart-Station IA Energenic : Monitoring & Maintenance Prédictive")
+
+# --- CONSTANTES ---
+POINTS_PAR_JOUR = 96  # 15 min * 96 = 24h
+FENETRE_ETUDE_MAX = POINTS_PAR_JOUR * 60  # Mémoire de 60 jours pour le calcul
+POINTS_AFFICHAGE_ZOOM = POINTS_PAR_JOUR * 10  # Focus visuel de 10 jours
+PROJECTION_GRAPHE_POINTS = POINTS_PAR_JOUR * 10  # Projection de 10 jours
+PROJECTION_ANALYSE_POINTS = POINTS_PAR_JOUR * 365 # Calcul sur 1 an
+SEUIL_LEGAL = 0.5
 
 def transformer_drive_en_direct(url):
     try:
@@ -23,9 +30,6 @@ URL_CUVES = transformer_drive_en_direct("https://drive.google.com/file/d/1BxdKjJ
 URL_POMPES = transformer_drive_en_direct("https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing")
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
-SEUIL_LEGAL = 0.5
-PROJECTION_GRAPHE_POINTS = 96 * 10 
-PROJECTION_ANALYSE_POINTS = 96 * 365 
 
 @st.cache_data(ttl=600)
 def charger_donnees(url_c, url_p):
@@ -51,6 +55,7 @@ def charger_donnees(url_c, url_p):
         return None, []
 
 def analyser_ia_complet(df, cols_p):
+    # Calcul CUSUM Global
     cusum_vals = {p: 0.0 for p in cols_p}
     for idx, row in df.iterrows():
         ecart = row['Baisse_Cuve'] - row['Ventes_Totales']
@@ -72,27 +77,34 @@ def analyser_ia_complet(df, cols_p):
         for p_id in pompes_cuve:
             p_str = str(p_id)
             if f'CUSUM_P{p_str}' in subset.columns:
-                y_val = subset[f'CUSUM_P{p_str}'].values
+                y_full = subset[f'CUSUM_P{p_str}'].values
+                
+                # --- LOGIQUE DYNAMIQUE : 60 JOURS SI DISPO ---
+                nb_points_etude = min(len(y_full), FENETRE_ETUDE_MAX)
+                y_etude = y_full[-nb_points_etude:]
+                
                 vol_p_total = subset[p_str].sum()
                 lim_actuelle = vol_p_total * (SEUIL_LEGAL / 100)
 
-                if len(y_val) > 192:
+                if len(y_etude) > 192:
                     pentes = []
+                    # On divise la fenêtre disponible en 5 blocs
+                    taille_bloc = len(y_etude) // 5
                     for i in range(5):
-                        fin = len(y_val) - (i * 192)
-                        debut = max(0, fin - 192)
-                        model_ts = TheilSenRegressor(random_state=42).fit(np.arange(fin-debut).reshape(-1, 1), y_val[debut:fin])
+                        fin = len(y_etude) - (i * taille_bloc)
+                        debut = max(0, fin - taille_bloc)
+                        model_ts = TheilSenRegressor(random_state=42).fit(np.arange(fin-debut).reshape(-1, 1), y_etude[debut:fin])
                         pentes.insert(0, model_ts.coef_[0])
 
                     v_actuelle = pentes[-1]
-                    accel = (pentes[-1] - pentes[0]) / (4 * 192)
+                    accel = (pentes[-1] - pentes[0]) / (len(y_etude)) if len(y_etude)>0 else 0
                     
                     t_visu = np.arange(1, PROJECTION_GRAPHE_POINTS + 1)
-                    graph_y = y_val[-1] + (v_actuelle * t_visu) + (0.5 * accel * (t_visu**2))
+                    graph_y = y_etude[-1] + (v_actuelle * t_visu) + (0.5 * accel * (t_visu**2))
                     graph_times = [subset['Timestamp'].max() + pd.Timedelta(minutes=15*i) for i in range(1, PROJECTION_GRAPHE_POINTS + 1)]
                     
                     t_an = np.arange(1, PROJECTION_ANALYSE_POINTS + 1)
-                    y_an = y_val[-1] + (v_actuelle * t_an) + (0.5 * accel * (t_an**2))
+                    y_an = y_etude[-1] + (v_actuelle * t_an) + (0.5 * accel * (t_an**2))
                     v_lim = subset[p_str].tail(96).mean() * (SEUIL_LEGAL / 100)
                     lim_futures = lim_actuelle + (t_an * v_lim)
                     
@@ -109,18 +121,11 @@ def analyser_ia_complet(df, cols_p):
                         "accel": round(abs(pentes[-1]/pentes[0]) if pentes[0]!=0 else 1.0, 2)
                     }
 
-        # --- RAPPORT IA & ANOMALIES ---
+        # Rapport Anomalies (basé sur l'historique de la cuve)
         anomalies_brusques = subset[(subset['Anomaly_Score'] == -1) & (abs(subset['Ratio_Brut']) > SEUIL_LEGAL)]
         for _, row_a in anomalies_brusques.iterrows():
-            if row_a['Ratio_Brut'] > 0.5: type_ano = "VOL / FUITE"
-            elif row_a['Ratio_Brut'] < -0.5: type_ano = "MÉTROLOGIE / PRÉSENCE D'AIR"
-            else: type_ano = "ANOMALIE NON CLASSIFIÉE"
-
-            p_ref = pompes_cuve[0]
-            echeance = diagnostics_preventifs.get(p_ref, {}).get('jours', 'N/A')
-            rapport_diagnostic.append(
-                f"🚨 {row_a['Timestamp'].strftime('%d/%m %H:%M')} | Cuve {id_c} : {type_ano} ({row_a['Ratio_Brut']:.2f}%) - Prévision Maintenance : {echeance}"
-            )
+            type_ano = "VOL / FUITE" if row_a['Ratio_Brut'] > 0 else "MÉTROLOGIE"
+            rapport_diagnostic.append(f"🚨 {row_a['Timestamp'].strftime('%d/%m %H:%M')} | Cuve {id_c} : {type_ano} ({row_a['Ratio_Brut']:.2f}%)")
 
     return df, rapport_diagnostic, diagnostics_preventifs
 
@@ -129,7 +134,8 @@ data, p_ids = charger_donnees(URL_CUVES, URL_POMPES)
 if data is not None:
     data, journal, stats = analyser_ia_complet(data, p_ids)
     
-    st.sidebar.header("📋 Prévisions Maintenance")
+    # Sidebar
+    st.sidebar.header("📋 Maintenance Prédictive")
     for p in sorted(p_ids):
         s_p = stats.get(int(p), {"jours": "N/A", "msg": "N/A"})
         st.sidebar.write(f"**Pompe {p}** : {s_p['msg']}")
@@ -139,52 +145,45 @@ if data is not None:
     c_id = st.sidebar.selectbox("Sélection Cuve", [1, 2])
     df_c = data[data['ID_Cuve'] == c_id].sort_values('Timestamp')
 
-    # GRAPHE RATIO
-    st.subheader(f"📊 Analyse Instantanée (Brut) : Cuve {c_id}")
+    # 📊 GRAPHE RATIO (HISTORIQUE COMPLET)
+    st.subheader(f"📊 Ratio de Réconciliation : Cuve {c_id} (Historique Complet)")
     fig_ratio = go.Figure()
     colors = np.where(df_c['Ratio_Brut'].abs() <= SEUIL_LEGAL, '#00ff88', '#ff4b4b')
     fig_ratio.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c['Ratio_Brut'], mode='markers', marker=dict(color=colors, size=4), name="Ratio"))
     fig_ratio.add_hline(y=SEUIL_LEGAL, line_dash="dash", line_color="#ff4b4b")
     fig_ratio.add_hline(y=-SEUIL_LEGAL, line_dash="dash", line_color="#ff4b4b")
-    fig_ratio.update_layout(template="plotly_dark", height=400)
+    fig_ratio.update_layout(template="plotly_dark", height=350)
     st.plotly_chart(fig_ratio, use_container_width=True)
 
-    # GRAPHE CUSUM
-    st.subheader("📈 Santé Métrologique & Projection Courbée (Zoom 10j)")
+    # 📈 GRAPHE CUSUM (ZOOM 10J PASSÉ + 10J PROJETÉ)
+    st.subheader(f"📈 Zoom Santé Métrologique (10j passés + 10j futurs)")
     for p_id in LIAISONS[c_id]:
         p_str = str(p_id)
         if f'CUSUM_P{p_str}' in df_c.columns:
             s_p = stats.get(p_id, {})
+            
+            # --- FOCALISATION VISUELLE (10 DERNIERS JOURS) ---
+            df_zoom = df_c.tail(POINTS_AFFICHAGE_ZOOM)
+            
             fig = go.Figure()
+            lim_h = df_zoom[p_str].cumsum() * (SEUIL_LEGAL / 100)
             
-            # --- LIMITE BIDIRECTIONNELLE HISTORIQUE ---
-            # On calcule la limite cumulative unique à cette pompe sur la période passée
-            lim_historique = df_c[p_str].cumsum() * (SEUIL_LEGAL / 100)
+            # Passé Focalisé
+            fig.add_trace(go.Scatter(x=df_zoom['Timestamp'], y=lim_h, name="Limite (+)", line=dict(color='rgba(255, 75, 75, 0.4)', dash='dash')))
+            fig.add_trace(go.Scatter(x=df_zoom['Timestamp'], y=-lim_h, showlegend=False, line=dict(color='rgba(255, 75, 75, 0.4)', dash='dash')))
+            fig.add_trace(go.Scatter(x=df_zoom['Timestamp'], y=df_zoom[f'CUSUM_P{p_str}'], name="CUSUM Réel (Zoom)", line=dict(color='#00d4ff', width=4)))
             
-            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=lim_historique, 
-                                     name="Limite Légale (+)", line=dict(color='rgba(255, 75, 75, 0.4)', dash='dash')))
-            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=-lim_historique, 
-                                     name="Limite Légale (-)", line=dict(color='rgba(255, 75, 75, 0.4)', dash='dash'), showlegend=False))
-            
-            # --- DONNÉES RÉELLES ---
-            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c[f'CUSUM_P{p_str}'], 
-                                     name="CUSUM Réel", line=dict(color='#00d4ff', width=3)))
-            
-            # --- PROJECTION ET LIMITES FUTURES ---
+            # Futur Projeté
             if "graph_x" in s_p:
-                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["graph_y"], 
-                                         name="Proj. Courbe", line=dict(color='yellow', dash='dot')))
-                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_sup"], 
-                                         name="Lim. Future (+)", line=dict(color='red', dash='dash')))
-                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_inf"], 
-                                         showlegend=False, line=dict(color='red', dash='dash')))
+                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["graph_y"], name="Proj. IA (10j)", line=dict(color='yellow', width=3, dash='dot')))
+                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_sup"], name="Lim. Future (+)", line=dict(color='red', dash='dash')))
+                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_inf"], showlegend=False, line=dict(color='red', dash='dash')))
             
-            fig.update_layout(template="plotly_dark", height=450, 
-                              title=f"Pompe {p_id} | Accélération : x{s_p.get('accel', 1.0)}")
+            fig.update_layout(template="plotly_dark", height=450, title=f"Pompe {p_id} | Accélération : x{s_p.get('accel', 1.0)}")
             st.plotly_chart(fig, use_container_width=True)
 
-    # JOURNAL DES ANOMALIES
+    # JOURNAL
     st.divider()
-    st.subheader("📄 Rapport Diagnostic IA & Journal des Anomalies")
-    for m in journal:
+    st.subheader("📄 Journal des Anomalies")
+    for m in journal[-15:]: # On montre les 15 dernières
         st.write(m)
