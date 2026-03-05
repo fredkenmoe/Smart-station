@@ -4,6 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from sklearn.ensemble import IsolationForest
 from sklearn.linear_model import TheilSenRegressor
+import base64
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Smart-Station IA Energenic", layout="wide")
@@ -11,39 +12,34 @@ st.set_page_config(page_title="Smart-Station IA Energenic", layout="wide")
 st.title("🚀 Smart-Station IA Energenic : Monitoring & Maintenance Prédictive")
 
 # --- CONSTANTES ---
-POINTS_PAR_JOUR = 96  # 15 min * 96 = 24h
-FENETRE_ETUDE_MAX = POINTS_PAR_JOUR * 60  # Mémoire de 60 jours pour le calcul
-POINTS_AFFICHAGE_ZOOM = POINTS_PAR_JOUR * 10  # Focus visuel de 10 jours
-PROJECTION_GRAPHE_POINTS = POINTS_PAR_JOUR * 10  # Projection de 10 jours
-PROJECTION_ANALYSE_POINTS = POINTS_PAR_JOUR * 365 # Calcul sur 1 an
+POINTS_PAR_JOUR = 96
+FENETRE_ETUDE_MAX = POINTS_PAR_JOUR * 60
+POINTS_AFFICHAGE_ZOOM = POINTS_PAR_JOUR * 10
+PROJECTION_GRAPHE_POINTS = POINTS_PAR_JOUR * 10
+PROJECTION_ANALYSE_POINTS = POINTS_PAR_JOUR * 365
 SEUIL_LEGAL = 0.5
 
-import pandas as pd
-import base64
-
-import base64
-
+# --- FONCTION DE CONVERSION DE LIEN (CORRIGÉE) ---
 def preparer_lien_cloud(url):
-    # --- CAS 1 : GOOGLE DRIVE ---
     if "drive.google.com" in url:
         try:
             id_fichier = url.split("/d/")[1].split("/")[0]
             return f"https://drive.google.com/uc?export=download&id={id_fichier}"
-        except:
-            return url
-
-    # --- CAS 2 : ONEDRIVE / SHAREPOINT (1drv.ms ou sharepoint.com) ---
-    elif "1drv.ms" in url or "sharepoint.com" in url:
-        # Cette méthode transforme n'importe quel lien de partage Microsoft en lien de téléchargement direct
-        # C'est la méthode officielle "Microsoft Graph"
+        except: return url
+    
+    # Méthode Spécifique pour OneDrive (1drv.ms)
+    elif "1drv.ms" in url:
+        # On utilise l'encodage Base64 officiel pour transformer le lien de partage en lien direct
         b64_url = base64.b64encode(bytes(url, "utf-8")).decode("utf-8")
         res_url = "u!" + b64_url.replace("/", "_").replace("+", "-").rstrip("=")
         return f"https://api.onedrive.com/v1.shares/{res_url}/root/content"
-
+    
+    elif "sharepoint.com" in url:
+        return url.split("?")[0] + "?download=1"
+        
     return url
 
-# --- UTILISATION ---
-# Tes liens fonctionneront maintenant parfaitement !
+# --- UTILISATION DES LIENS ---
 URL_CUVES = preparer_lien_cloud("https://1drv.ms/x/c/084ded698d405b54/IQCNUBR1ojs1T5AI52mZogl5ARUw5tA8E5AdOjYaNEWo5Eg?e=XdlD0M")
 URL_POMPES = preparer_lien_cloud("https://1drv.ms/x/c/084ded698d405b54/IQAkYx06NgHeRam1wozkhh0_AbdIazatXP813L1QE5lJDh0?e=kJFyBm")
 
@@ -52,25 +48,17 @@ LIAISONS = {1: [1, 3], 2: [2, 4]}
 @st.cache_data(ttl=600)
 def charger_donnees(url_c, url_p):
     try:
-        # --- STRATÉGIE DE LECTURE HYBRIDE ---
-        # On essaie d'abord Excel (Indispensable pour tes liens 1drv.ms)
-        try:
-            df_c = pd.read_excel(url_c)
-            df_p = pd.read_excel(url_p)
-        except:
-            # Si Excel échoue, on tente le CSV
-            df_c = pd.read_csv(url_c)
-            df_p = pd.read_csv(url_p)
+        # Force l'utilisation du moteur openpyxl pour Excel
+        df_c = pd.read_excel(url_c, engine='openpyxl')
+        df_p = pd.read_excel(url_p, engine='openpyxl')
         
-        # Nettoyage automatique des noms de colonnes
         df_c.columns = df_c.columns.str.strip()
         df_p.columns = df_p.columns.str.strip()
 
-        # Conversion robuste des dates (force le format String avant de transformer)
+        # Conversion robuste des dates
         df_c['Timestamp'] = pd.to_datetime(df_c['Date'].astype(str) + ' ' + df_c['Heure'].astype(str), dayfirst=True)
         df_p['Timestamp'] = pd.to_datetime(df_p['Date'].astype(str) + ' ' + df_p['Heure'].astype(str), dayfirst=True)
         
-        # Le reste du traitement IA (Pivot, Baisse_Cuve, etc.)
         df_p['Slot'] = df_p['Timestamp'].dt.floor('15min') + pd.Timedelta(minutes=15)
         df_p['ID_Pompe'] = df_p['ID_Pompe'].astype(str)
         p_pivot = df_p.pivot_table(index=['ID_Cuve', 'Slot'], columns='ID_Pompe', values='Volume_Vendu', aggfunc='sum').fillna(0).reset_index()
@@ -89,10 +77,11 @@ def charger_donnees(url_c, url_p):
         
         return df, cols_p
     except Exception as e:
-        st.error(f"⚠️ Erreur de lecture : {e}")
+        st.error(f"⚠️ Erreur de lecture : {e}. Vérifiez que le lien est 'Public' (Toute personne disposant du lien).")
         return None, []
+
+# --- LES FONCTIONS D'ANALYSE (IDENTIQUES) ---
 def analyser_ia_complet(df, cols_p):
-    # Calcul CUSUM Global
     cusum_vals = {p: 0.0 for p in cols_p}
     for idx, row in df.iterrows():
         ecart = row['Baisse_Cuve'] - row['Ventes_Totales']
@@ -115,17 +104,13 @@ def analyser_ia_complet(df, cols_p):
             p_str = str(p_id)
             if f'CUSUM_P{p_str}' in subset.columns:
                 y_full = subset[f'CUSUM_P{p_str}'].values
-                
-                # --- LOGIQUE DYNAMIQUE : 60 JOURS SI DISPO ---
                 nb_points_etude = min(len(y_full), FENETRE_ETUDE_MAX)
                 y_etude = y_full[-nb_points_etude:]
-                
                 vol_p_total = subset[p_str].sum()
                 lim_actuelle = vol_p_total * (SEUIL_LEGAL / 100)
 
                 if len(y_etude) > 192:
                     pentes = []
-                    # On divise la fenêtre disponible en 5 blocs
                     taille_bloc = len(y_etude) // 5
                     for i in range(5):
                         fin = len(y_etude) - (i * taille_bloc)
@@ -135,7 +120,6 @@ def analyser_ia_complet(df, cols_p):
 
                     v_actuelle = pentes[-1]
                     accel = (pentes[-1] - pentes[0]) / (len(y_etude)) if len(y_etude)>0 else 0
-                    
                     t_visu = np.arange(1, PROJECTION_GRAPHE_POINTS + 1)
                     graph_y = y_etude[-1] + (v_actuelle * t_visu) + (0.5 * accel * (t_visu**2))
                     graph_times = [subset['Timestamp'].max() + pd.Timedelta(minutes=15*i) for i in range(1, PROJECTION_GRAPHE_POINTS + 1)]
@@ -158,77 +142,48 @@ def analyser_ia_complet(df, cols_p):
                         "accel": round(abs(pentes[-1]/pentes[0]) if pentes[0]!=0 else 1.0, 2)
                     }
 
-        # Rapport Anomalies (basé sur l'historique de la cuve)
-       # --- RAPPORT IA & ANOMALIES ---
         anomalies_brusques = subset[(subset['Anomaly_Score'] == -1) & (abs(subset['Ratio_Brut']) > SEUIL_LEGAL)]
         for _, row_a in anomalies_brusques.iterrows():
-            if row_a['Ratio_Brut'] > 0.5: type_ano = "VOL / FUITE"
-            elif row_a['Ratio_Brut'] < -0.5: type_ano = "MÉTROLOGIE / PRÉSENCE D'AIR"
-            else: type_ano = "ANOMALIE NON CLASSIFIÉE"
-
-            p_ref = pompes_cuve[0]
-            echeance = diagnostics_preventifs.get(p_ref, {}).get('jours', 'N/A')
-            rapport_diagnostic.append(
-                f"🚨 {row_a['Timestamp'].strftime('%d/%m %H:%M')} | Cuve {id_c} : {type_ano} ({row_a['Ratio_Brut']:.2f}%) - Prévision Maintenance : {echeance}"
-            )
+            type_ano = "VOL / FUITE" if row_a['Ratio_Brut'] > 0.5 else "MÉTROLOGIE"
+            rapport_diagnostic.append(f"🚨 {row_a['Timestamp'].strftime('%d/%m %H:%M')} | Cuve {id_c} : {type_ano}")
 
     return df, rapport_diagnostic, diagnostics_preventifs
 
-# --- DASHBOARD ---
+# --- RENDU DASHBOARD ---
 data, p_ids = charger_donnees(URL_CUVES, URL_POMPES)
 if data is not None:
     data, journal, stats = analyser_ia_complet(data, p_ids)
     
-    # Sidebar
     st.sidebar.header("📋 Maintenance Prédictive")
     for p in sorted(p_ids):
         s_p = stats.get(int(p), {"jours": "N/A", "msg": "N/A"})
         st.sidebar.write(f"**Pompe {p}** : {s_p['msg']}")
         st.sidebar.caption(f"Échéance : {s_p['jours']}")
-        st.sidebar.divider()
 
     c_id = st.sidebar.selectbox("Sélection Cuve", [1, 2])
     df_c = data[data['ID_Cuve'] == c_id].sort_values('Timestamp')
 
-    # 📊 GRAPHE RATIO (HISTORIQUE COMPLET)
-    st.subheader(f"📊 Ratio de Réconciliation : Cuve {c_id} (Historique Complet)")
+    # Graphe 1
+    st.subheader(f"📊 Ratio de Réconciliation : Cuve {c_id}")
     fig_ratio = go.Figure()
     colors = np.where(df_c['Ratio_Brut'].abs() <= SEUIL_LEGAL, '#00ff88', '#ff4b4b')
-    fig_ratio.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c['Ratio_Brut'], mode='markers', marker=dict(color=colors, size=4), name="Ratio"))
-    fig_ratio.add_hline(y=SEUIL_LEGAL, line_dash="dash", line_color="#ff4b4b")
-    fig_ratio.add_hline(y=-SEUIL_LEGAL, line_dash="dash", line_color="#ff4b4b")
+    fig_ratio.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c['Ratio_Brut'], mode='markers', marker=dict(color=colors, size=4)))
     fig_ratio.update_layout(template="plotly_dark", height=350)
     st.plotly_chart(fig_ratio, use_container_width=True)
 
-    # 📈 GRAPHE CUSUM (ZOOM 10J PASSÉ + 10J PROJETÉ)
-    st.subheader(f"📈Santé Métrologique")
+    # Graphe 2
+    st.subheader(f"📈 Santé Métrologique")
     for p_id in LIAISONS[c_id]:
         p_str = str(p_id)
         if f'CUSUM_P{p_str}' in df_c.columns:
             s_p = stats.get(p_id, {})
-            
-            # --- FOCALISATION VISUELLE (10 DERNIERS JOURS) ---
             df_zoom = df_c.tail(POINTS_AFFICHAGE_ZOOM)
-            
             fig = go.Figure()
-            lim_h = df_zoom[p_str].cumsum() * (SEUIL_LEGAL / 100)
-            
-            # Passé Focalisé
-            fig.add_trace(go.Scatter(x=df_zoom['Timestamp'], y=lim_h, name="Limite (+)", line=dict(color='rgba(255, 75, 75, 0.4)', dash='dash')))
-            fig.add_trace(go.Scatter(x=df_zoom['Timestamp'], y=-lim_h, showlegend=False, line=dict(color='rgba(255, 75, 75, 0.4)', dash='dash')))
-            fig.add_trace(go.Scatter(x=df_zoom['Timestamp'], y=df_zoom[f'CUSUM_P{p_str}'], name="CUSUM Réel (Zoom)", line=dict(color='#00d4ff', width=4)))
-            
-            # Futur Projeté
+            fig.add_trace(go.Scatter(x=df_zoom['Timestamp'], y=df_zoom[f'CUSUM_P{p_str}'], name="Réel", line=dict(color='#00d4ff', width=4)))
             if "graph_x" in s_p:
-                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["graph_y"], name="Proj. IA (10j)", line=dict(color='yellow', width=3, dash='dot')))
-                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_sup"], name="Lim. Future (+)", line=dict(color='red', dash='dash')))
-                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_inf"], showlegend=False, line=dict(color='red', dash='dash')))
-            
-            fig.update_layout(template="plotly_dark", height=450, title=f"Pompe {p_id} | Accélération : x{s_p.get('accel', 1.0)}")
+                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["graph_y"], name="Proj. IA", line=dict(color='yellow', dash='dot')))
+            fig.update_layout(template="plotly_dark", height=400, title=f"Pompe {p_id}")
             st.plotly_chart(fig, use_container_width=True)
 
-    # JOURNAL
-    st.divider()
     st.subheader("📄 Journal des Anomalies")
-    for m in journal[-15:]: # On montre les 15 dernières
-        st.write(m)
+    for m in journal[-10:]: st.write(m)
