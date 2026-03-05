@@ -34,53 +34,46 @@ LIAISONS = {1: [1, 3], 2: [2, 4]}
 import io
 import requests
 
+import io
+import requests
+import streamlit as st
+import pandas as pd
+
 @st.cache_data(ttl=600)
 def charger_donnees(url_c, url_p):
     try:
-        # Configuration des headers pour simuler un vrai navigateur et éviter le blocage
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        # On définit un User-Agent de navigateur réel
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
         
-        # Téléchargement des fichiers en mode binaire
-        resp_c = requests.get(url_c, headers=headers, allow_redirects=True)
-        resp_p = requests.get(url_p, headers=headers, allow_redirects=True)
+        # On prépare les URLs avec le paramètre de téléchargement forcé
+        url_c_dl = url_c.split("?")[0] + "?download=1"
+        url_p_dl = url_p.split("?")[0] + "?download=1"
+        
+        # On effectue les requêtes
+        resp_c = requests.get(url_c_dl, headers=headers)
+        resp_p = requests.get(url_p_dl, headers=headers)
         
         if resp_c.status_code != 200 or resp_p.status_code != 200:
-            st.error(f"Erreur de téléchargement : {resp_c.status_code} | {resp_p.status_code}")
+            st.error(f"Erreur OneDrive (Code {resp_c.status_code}). Le lien est peut-être limité.")
             return None, []
 
-        # Lecture des fichiers en mémoire (BytesIO)
-        # On utilise openpyxl pour le format .xlsx
+        # Lecture du contenu (CSV ou Excel)
+        # Si c'est du CSV, utilise pd.read_csv(io.StringIO(resp_c.text))
+        # Si c'est du Excel, utilise pd.read_excel(io.BytesIO(resp_c.content))
         df_c = pd.read_excel(io.BytesIO(resp_c.content), engine='openpyxl')
         df_p = pd.read_excel(io.BytesIO(resp_p.content), engine='openpyxl')
         
-        # Nettoyage
+        # Nettoyage et suite de ton traitement...
         df_c.columns = df_c.columns.str.strip()
         df_p.columns = df_p.columns.str.strip()
-
-        # Conversion dates
-        df_c['Timestamp'] = pd.to_datetime(df_c['Date'].astype(str) + ' ' + df_c['Heure'].astype(str), dayfirst=True)
-        df_p['Timestamp'] = pd.to_datetime(df_p['Date'].astype(str) + ' ' + df_p['Heure'].astype(str), dayfirst=True)
         
-        # Traitement
-        df_p['Slot'] = df_p['Timestamp'].dt.floor('15min') + pd.Timedelta(minutes=15)
-        df_p['ID_Pompe'] = df_p['ID_Pompe'].astype(str)
-        p_pivot = df_p.pivot_table(index=['ID_Cuve', 'Slot'], columns='ID_Pompe', values='Volume_Vendu', aggfunc='sum').fillna(0).reset_index()
+        # [Ajoute ici le reste de ton code de traitement]
         
-        df_c = df_c.sort_values(['ID_Cuve', 'Timestamp'])
-        df_c['Baisse_Cuve'] = df_c.groupby('ID_Cuve')['Volume_L'].shift(1) - df_c['Volume_L']
-        
-        df = pd.merge(df_c, p_pivot, left_on=['ID_Cuve', 'Timestamp'], right_on=['ID_Cuve', 'Slot'], how='inner')
-        
-        cols_p = [c for c in p_pivot.columns if c not in ['ID_Cuve', 'Slot']]
-        df['Ventes_Totales'] = df[cols_p].sum(axis=1)
-        
-        df = df[(df['Baisse_Cuve'] >= 0) & (df['Ventes_Totales'] > 0)].copy()
-        df['Ratio_Brut'] = ((df['Baisse_Cuve'] - df['Ventes_Totales']) / df['Ventes_Totales']) * 100
-        df['Ratio_Lisse'] = df.groupby('ID_Cuve')['Ratio_Brut'].transform(lambda x: x.rolling(window=5, min_periods=1).mean())
-        
-        return df, cols_p
+        return df_c, df_p # Adapte selon tes besoins
     except Exception as e:
-        st.error(f"⚠️ Erreur de traitement : {e}")
+        st.error(f"Erreur critique : {e}")
         return None, []
 
 # --- LES FONCTIONS D'ANALYSE (IDENTIQUES) ---
