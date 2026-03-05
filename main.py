@@ -109,14 +109,13 @@ def analyser_ia_complet(df, cols_p):
                         "accel": round(abs(pentes[-1]/pentes[0]) if pentes[0]!=0 else 1.0, 2)
                     }
 
-        # --- RAPPORT IA & ANOMALIES (AVEC ÉCHÉANCE) ---
+        # --- RAPPORT IA & ANOMALIES ---
         anomalies_brusques = subset[(subset['Anomaly_Score'] == -1) & (abs(subset['Ratio_Brut']) > SEUIL_LEGAL)]
         for _, row_a in anomalies_brusques.iterrows():
             if row_a['Ratio_Brut'] > 0.5: type_ano = "VOL / FUITE"
             elif row_a['Ratio_Brut'] < -0.5: type_ano = "MÉTROLOGIE / PRÉSENCE D'AIR"
             else: type_ano = "ANOMALIE NON CLASSIFIÉE"
 
-            # On lie l'anomalie à la pompe de la cuve qui a la pire échéance
             p_ref = pompes_cuve[0]
             echeance = diagnostics_preventifs.get(p_ref, {}).get('jours', 'N/A')
             rapport_diagnostic.append(
@@ -157,13 +156,31 @@ if data is not None:
         if f'CUSUM_P{p_str}' in df_c.columns:
             s_p = stats.get(p_id, {})
             fig = go.Figure()
-            lim_h = df_c[p_str].cumsum() * (SEUIL_LEGAL / 100)
-            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c[f'CUSUM_P{p_str}'], name="Réel", line=dict(color='#00d4ff', width=3)))
+            
+            # --- LIMITE BIDIRECTIONNELLE HISTORIQUE ---
+            # On calcule la limite cumulative unique à cette pompe sur la période passée
+            lim_historique = df_c[p_str].cumsum() * (SEUIL_LEGAL / 100)
+            
+            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=lim_historique, 
+                                     name="Limite Légale (+)", line=dict(color='rgba(255, 75, 75, 0.4)', dash='dash')))
+            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=-lim_historique, 
+                                     name="Limite Légale (-)", line=dict(color='rgba(255, 75, 75, 0.4)', dash='dash'), showlegend=False))
+            
+            # --- DONNÉES RÉELLES ---
+            fig.add_trace(go.Scatter(x=df_c['Timestamp'], y=df_c[f'CUSUM_P{p_str}'], 
+                                     name="CUSUM Réel", line=dict(color='#00d4ff', width=3)))
+            
+            # --- PROJECTION ET LIMITES FUTURES ---
             if "graph_x" in s_p:
-                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["graph_y"], name="Proj. Courbe", line=dict(color='yellow', dash='dot')))
-                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_sup"], name="Lim. Future", line=dict(color='red', dash='dash')))
-                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_inf"], showlegend=False, line=dict(color='red', dash='dash')))
-            fig.update_layout(template="plotly_dark", height=450, title=f"Pompe {p_id} | Accélération : x{s_p.get('accel')}")
+                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["graph_y"], 
+                                         name="Proj. Courbe", line=dict(color='yellow', dash='dot')))
+                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_sup"], 
+                                         name="Lim. Future (+)", line=dict(color='red', dash='dash')))
+                fig.add_trace(go.Scatter(x=s_p["graph_x"], y=s_p["lim_inf"], 
+                                         showlegend=False, line=dict(color='red', dash='dash')))
+            
+            fig.update_layout(template="plotly_dark", height=450, 
+                              title=f"Pompe {p_id} | Accélération : x{s_p.get('accel', 1.0)}")
             st.plotly_chart(fig, use_container_width=True)
 
     # JOURNAL DES ANOMALIES
