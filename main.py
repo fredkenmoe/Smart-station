@@ -18,25 +18,34 @@ PROJECTION_GRAPHE_POINTS = POINTS_PAR_JOUR * 10  # Projection de 10 jours
 PROJECTION_ANALYSE_POINTS = POINTS_PAR_JOUR * 365 # Calcul sur 1 an
 SEUIL_LEGAL = 0.5
 
+import pandas as pd
 import base64
 
 def obtenir_lien_direct(url):
+    """
+    Transforme dynamiquement un lien de partage en flux de données brut (Raw Data).
+    Supporte : Google Drive, OneDrive et SharePoint Energenic.
+    """
     try:
-        # CAS GOOGLE DRIVE
+        # CAS 1 : GOOGLE DRIVE
         if "drive.google.com" in url:
             file_id = url.split("/d/")[1].split("/")[0]
             return f"https://drive.google.com/uc?export=download&id={file_id}"
         
-        # CAS ONEDRIVE
-        elif "1drv.ms" in url or "onedrive.live.com" in url:
-            # Encodage spécial pour OneDrive (Base64)
-            data_bytes64 = base64.b64encode(bytes(url, 'utf-8'))
-            data_sha1 = data_bytes64.decode('utf-8').replace('/', '_').replace('+', '-').rstrip('=')
-            return f"https://api.onedrive.com/v1.shares/u!{data_sha1}/root/content"
+        # CAS 2 : SHAREPOINT / ONEDRIVE (Encodage Base64 pour l'API Microsoft)
+        elif "sharepoint.com" in url or "1drv.ms" in url:
+            # On génère un ID de partage encodé en Base64 pour l'API Graph
+            encoded_url = base64.b64encode(bytes(url, 'utf-8')).decode('utf-8')
+            # On nettoie l'encodage pour l'URL (standard Microsoft)
+            res_url = "u!" + encoded_url.replace('/', '_').replace('+', '-').rstrip('=')
+            return f"https://api.onedrive.com/v1.shares/{res_url}/root/content"
         
         return url # Retourne l'URL tel quel si c'est déjà un lien direct
-    except Exception:
+    except Exception as e:
+        st.error(f"Erreur de conversion du lien Cloud : {e}")
         return url
+
+# --- UTILISATION ---
 
 URL_CUVES = obtenir_lien_direct("https://drive.google.com/file/d/1BxdKjJB7Difw4vfe4OKylMV_b5PAGUgL/view?usp=sharing")
 URL_POMPES = obtenir_lien_direct("https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing")
