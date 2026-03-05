@@ -122,10 +122,18 @@ def analyser_ia_complet(df, cols_p):
                     }
 
         # Rapport Anomalies (basé sur l'historique de la cuve)
+       # --- RAPPORT IA & ANOMALIES ---
         anomalies_brusques = subset[(subset['Anomaly_Score'] == -1) & (abs(subset['Ratio_Brut']) > SEUIL_LEGAL)]
         for _, row_a in anomalies_brusques.iterrows():
-            type_ano = "VOL / FUITE" if row_a['Ratio_Brut'] > 0 else "MÉTROLOGIE"
-            rapport_diagnostic.append(f"🚨 {row_a['Timestamp'].strftime('%d/%m %H:%M')} | Cuve {id_c} : {type_ano} ({row_a['Ratio_Brut']:.2f}%)")
+            if row_a['Ratio_Brut'] > 0.5: type_ano = "VOL / FUITE"
+            elif row_a['Ratio_Brut'] < -0.5: type_ano = "MÉTROLOGIE / PRÉSENCE D'AIR"
+            else: type_ano = "ANOMALIE NON CLASSIFIÉE"
+
+            p_ref = pompes_cuve[0]
+            echeance = diagnostics_preventifs.get(p_ref, {}).get('jours', 'N/A')
+            rapport_diagnostic.append(
+                f"🚨 {row_a['Timestamp'].strftime('%d/%m %H:%M')} | Cuve {id_c} : {type_ano} ({row_a['Ratio_Brut']:.2f}%) - Prévision Maintenance : {echeance}"
+            )
 
     return df, rapport_diagnostic, diagnostics_preventifs
 
@@ -156,7 +164,7 @@ if data is not None:
     st.plotly_chart(fig_ratio, use_container_width=True)
 
     # 📈 GRAPHE CUSUM (ZOOM 10J PASSÉ + 10J PROJETÉ)
-    st.subheader(f"📈 Zoom Santé Métrologique (10j passés + 10j futurs)")
+    st.subheader(f"📈Santé Métrologique")
     for p_id in LIAISONS[c_id]:
         p_str = str(p_id)
         if f'CUSUM_P{p_str}' in df_c.columns:
