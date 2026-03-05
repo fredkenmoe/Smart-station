@@ -21,27 +21,26 @@ SEUIL_LEGAL = 0.5
 
 # --- FONCTION DE CONVERSION DE LIEN (CORRIGÉE) ---
 def preparer_lien_cloud(url):
+    # --- CAS 1 : GOOGLE DRIVE ---
     if "drive.google.com" in url:
         try:
             id_fichier = url.split("/d/")[1].split("/")[0]
             return f"https://drive.google.com/uc?export=download&id={id_fichier}"
         except: return url
-    
-    # Méthode Spécifique pour OneDrive (1drv.ms)
-    elif "1drv.ms" in url:
-        # On utilise l'encodage Base64 officiel pour transformer le lien de partage en lien direct
-        b64_url = base64.b64encode(bytes(url, "utf-8")).decode("utf-8")
-        res_url = "u!" + b64_url.replace("/", "_").replace("+", "-").rstrip("=")
-        return f"https://api.onedrive.com/v1.shares/{res_url}/root/content"
-    
-    elif "sharepoint.com" in url:
-        return url.split("?")[0] + "?download=1"
-        
-    return url
 
+    # --- CAS 2 : ONEDRIVE (1drv.ms) ---
+    # Cette méthode est souvent plus robuste que le Base64 pour les liens courts
+    elif "1drv.ms" in url:
+        # On enlève tout ce qu'il y a après le '?' pour avoir le lien propre
+        url_propre = url.split("?")[0]
+        # On remplace l'affichage par le téléchargement direct
+        return url_propre.replace("1drv.ms/x/c/", "1drv.ms/x/c/").replace("1drv.ms/", "1drv.ms/download.aspx?resid=")
+        # Note : Si ça échoue encore, utilise la méthode ci-dessous qui est radicale
+    
+    return url
 # --- UTILISATION DES LIENS ---
-URL_CUVES = preparer_lien_cloud(""https://1drv.ms/x/c/084ded698d405b54/IQCNUBR1ojs1T5AI52mZogl5ARUw5tA8E5AdOjYaNEWo5Eg?e=xGagpz"")
-URL_POMPES = preparer_lien_cloud(""https://1drv.ms/x/c/084ded698d405b54/IQAkYx06NgHeRam1wozkhh0_AbdIazatXP813L1QE5lJDh0?e=5I7xmZ"")
+URL_CUVES = preparer_lien_cloud("https://1drv.ms/x/c/084ded698d405b54/IQCNUBR1ojs1T5AI52mZogl5ARUw5tA8E5AdOjYaNEWo5Eg?e=xGagpz")
+URL_POMPES = preparer_lien_cloud("https://1drv.ms/x/c/084ded698d405b54/IQAkYx06NgHeRam1wozkhh0_AbdIazatXP813L1QE5lJDh0?e=5I7xmZ")
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 
