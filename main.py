@@ -31,20 +31,37 @@ URL_POMPES = preparer_lien_cloud("https://1drv.ms/x/c/084ded698d405b54/IQAkYx06N
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 
+import io
+import requests
+
 @st.cache_data(ttl=600)
 def charger_donnees(url_c, url_p):
     try:
-        # Force l'utilisation du moteur openpyxl pour Excel
-        df_c = pd.read_excel(url_c, engine='openpyxl')
-        df_p = pd.read_excel(url_p, engine='openpyxl')
+        # Configuration des headers pour simuler un vrai navigateur et éviter le blocage
+        headers = {'User-Agent': 'Mozilla/5.0'}
         
+        # Téléchargement des fichiers en mode binaire
+        resp_c = requests.get(url_c, headers=headers, allow_redirects=True)
+        resp_p = requests.get(url_p, headers=headers, allow_redirects=True)
+        
+        if resp_c.status_code != 200 or resp_p.status_code != 200:
+            st.error(f"Erreur de téléchargement : {resp_c.status_code} | {resp_p.status_code}")
+            return None, []
+
+        # Lecture des fichiers en mémoire (BytesIO)
+        # On utilise openpyxl pour le format .xlsx
+        df_c = pd.read_excel(io.BytesIO(resp_c.content), engine='openpyxl')
+        df_p = pd.read_excel(io.BytesIO(resp_p.content), engine='openpyxl')
+        
+        # Nettoyage
         df_c.columns = df_c.columns.str.strip()
         df_p.columns = df_p.columns.str.strip()
 
-        # Conversion robuste des dates
+        # Conversion dates
         df_c['Timestamp'] = pd.to_datetime(df_c['Date'].astype(str) + ' ' + df_c['Heure'].astype(str), dayfirst=True)
         df_p['Timestamp'] = pd.to_datetime(df_p['Date'].astype(str) + ' ' + df_p['Heure'].astype(str), dayfirst=True)
         
+        # Traitement
         df_p['Slot'] = df_p['Timestamp'].dt.floor('15min') + pd.Timedelta(minutes=15)
         df_p['ID_Pompe'] = df_p['ID_Pompe'].astype(str)
         p_pivot = df_p.pivot_table(index=['ID_Cuve', 'Slot'], columns='ID_Pompe', values='Volume_Vendu', aggfunc='sum').fillna(0).reset_index()
@@ -63,7 +80,7 @@ def charger_donnees(url_c, url_p):
         
         return df, cols_p
     except Exception as e:
-        st.error(f"⚠️ Erreur de lecture : {e}. Vérifiez que le lien est 'Public' (Toute personne disposant du lien).")
+        st.error(f"⚠️ Erreur de traitement : {e}")
         return None, []
 
 # --- LES FONCTIONS D'ANALYSE (IDENTIQUES) ---
