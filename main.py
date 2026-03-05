@@ -18,16 +18,28 @@ PROJECTION_GRAPHE_POINTS = POINTS_PAR_JOUR * 10  # Projection de 10 jours
 PROJECTION_ANALYSE_POINTS = POINTS_PAR_JOUR * 365 # Calcul sur 1 an
 SEUIL_LEGAL = 0.5
 
-def transformer_drive_en_direct(url):
+import base64
+
+def obtenir_lien_direct(url):
     try:
+        # CAS GOOGLE DRIVE
         if "drive.google.com" in url:
             file_id = url.split("/d/")[1].split("/")[0]
             return f"https://drive.google.com/uc?export=download&id={file_id}"
+        
+        # CAS ONEDRIVE
+        elif "1drv.ms" in url or "onedrive.live.com" in url:
+            # Encodage spécial pour OneDrive (Base64)
+            data_bytes64 = base64.b64encode(bytes(url, 'utf-8'))
+            data_sha1 = data_bytes64.decode('utf-8').replace('/', '_').replace('+', '-').rstrip('=')
+            return f"https://api.onedrive.com/v1.shares/u!{data_sha1}/root/content"
+        
+        return url # Retourne l'URL tel quel si c'est déjà un lien direct
+    except Exception:
         return url
-    except Exception: return url
 
-URL_CUVES = transformer_drive_en_direct("https://drive.google.com/file/d/1BxdKjJB7Difw4vfe4OKylMV_b5PAGUgL/view?usp=sharing")
-URL_POMPES = transformer_drive_en_direct("https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing")
+URL_CUVES = obtenir_lien_direct("https://drive.google.com/file/d/1BxdKjJB7Difw4vfe4OKylMV_b5PAGUgL/view?usp=sharing")
+URL_POMPES = obtenir_lien_direct("https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing")
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 
