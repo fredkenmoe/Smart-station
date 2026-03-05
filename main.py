@@ -21,34 +21,25 @@ SEUIL_LEGAL = 0.5
 import pandas as pd
 import base64
 
-def obtenir_lien_direct(url):
-    """
-    Transforme dynamiquement un lien de partage en flux de données brut (Raw Data).
-    Supporte : Google Drive, OneDrive et SharePoint Energenic.
-    """
-    try:
-        # CAS 1 : GOOGLE DRIVE
-        if "drive.google.com" in url:
-            file_id = url.split("/d/")[1].split("/")[0]
-            return f"https://drive.google.com/uc?export=download&id={file_id}"
-        
-        # CAS 2 : SHAREPOINT / ONEDRIVE (Encodage Base64 pour l'API Microsoft)
-        elif "sharepoint.com" in url or "1drv.ms" in url:
-            # On génère un ID de partage encodé en Base64 pour l'API Graph
-            encoded_url = base64.b64encode(bytes(url, 'utf-8')).decode('utf-8')
-            # On nettoie l'encodage pour l'URL (standard Microsoft)
-            res_url = "u!" + encoded_url.replace('/', '_').replace('+', '-').rstrip('=')
-            return f"https://api.onedrive.com/v1.shares/{res_url}/root/content"
-        
-        return url # Retourne l'URL tel quel si c'est déjà un lien direct
-    except Exception as e:
-        st.error(f"Erreur de conversion du lien Cloud : {e}")
-        return url
+def preparer_lien_cloud(url):
+    # --- CAS GOOGLE DRIVE ---
+    if "drive.google.com" in url:
+        id_fichier = url.split("/d/")[1].split("/")[0]
+        return f"https://drive.google.com/uc?export=download&id={id_fichier}"
+    
+    # --- CAS SHAREPOINT (Ta méthode préférée remise à jour) ---
+    elif "sharepoint.com" in url:
+        # On nettoie l'URL pour forcer le mode "Stream de données"
+        url_propre = url.replace(":x:/g/", ":x:/g/").split("?")[0] 
+        # Note : On garde /g/ ou /s/ mais on ajoute impérativement ?download=1
+        return f"{url_propre}?download=1"
+
+    return url
 
 # --- UTILISATION ---
 
-URL_CUVES = obtenir_lien_direct("https://drive.google.com/file/d/1BxdKjJB7Difw4vfe4OKylMV_b5PAGUgL/view?usp=sharing")
-URL_POMPES = obtenir_lien_direct("https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing")
+URL_CUVES = preparer_lien_cloud(""https://energenic.sharepoint.com/:x:/g/IQAmSmmAmijFS4UyM3FNpCvbAefpRb8WeRcwMaKNOLIXNHQ?e=T9CUbJ"")
+URL_POMPES = preparer_lien_cloud("https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing")
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 
