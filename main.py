@@ -38,8 +38,8 @@ def preparer_lien_cloud(url):
 
 # --- UTILISATION ---
 
-URL_CUVES = preparer_lien_cloud(""https://energenic.sharepoint.com/:x:/g/IQAmSmmAmijFS4UyM3FNpCvbAefpRb8WeRcwMaKNOLIXNHQ?e=T9CUbJ"")
-URL_POMPES = preparer_lien_cloud("https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing")
+URL_CUVES = preparer_lien_cloud("https://energenic.sharepoint.com/:x:/g/IQAmSmmAmijFS4UyM3FNpCvbAefpRb8WeRcwMaKNOLIXNHQ?e=T9CUbJ")
+URL_POMPES = preparer_lien_cloud("https://energenic.sharepoint.com/:x:/g/IQAI_nCblmrdQ6pEC2XrRn1lAd2q_vDxuMqosdVPAZwXTko?e=GpiehJ")
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 
