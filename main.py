@@ -18,41 +18,16 @@ PROJECTION_GRAPHE_POINTS = POINTS_PAR_JOUR * 10  # Projection de 10 jours
 PROJECTION_ANALYSE_POINTS = POINTS_PAR_JOUR * 365 # Calcul sur 1 an
 SEUIL_LEGAL = 0.5
 
-import pandas as pd
-import base64
-
-import base64
-import streamlit as st
-
-def obtenir_lien_direct(url):
-    """
-    Transforme dynamiquement un lien de partage en lien de téléchargement direct.
-    """
+def transformer_drive_en_direct(url):
     try:
-        # CAS 1 : GOOGLE DRIVE (Fonctionne parfaitement)
         if "drive.google.com" in url:
-            if "/d/" in url:
-                file_id = url.split("/d/")[1].split("/")[0]
-                return f"https://drive.google.com/uc?export=download&id={file_id}"
-        
-        # CAS 2 : ONEDRIVE / SHAREPOINT (La méthode 'download=1' est la seule fiable)
-        elif "1drv.ms" in url or "sharepoint.com" in url:
-            # On enlève tout paramètre existant après le '?'
-            url_propre = url.split("?")[0]
-            # Le paramètre ?download=1 force OneDrive à renvoyer le fichier binaire
-            return f"{url_propre}?download=1"
-        
-        return url 
-    except Exception as e:
-        st.error(f"Erreur de conversion du lien Cloud : {e}")
+            file_id = url.split("/d/")[1].split("/")[0]
+            return f"https://drive.google.com/uc?export=download&id={file_id}"
         return url
-# --- UTILISATION ---
-# Copie tes liens de partage Energenic ou Google ici
-URL_CUVES_BRUT = "https://1drv.ms/x/c/084ded698d405b54/IQCNUBR1ojs1T5AI52mZogl5ARUw5tA8E5AdOjYaNEWo5Eg?download=1" 
-URL_POMPES_BRUT = "https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing"
+    except Exception: return url
 
-URL_CUVES = obtenir_lien_direct(URL_CUVES_BRUT)
-URL_POMPES = obtenir_lien_direct(URL_POMPES_BRUT)
+URL_CUVES = transformer_drive_en_direct("https://drive.google.com/file/d/1BxdKjJB7Difw4vfe4OKylMV_b5PAGUgL/view?usp=sharing")
+URL_POMPES = transformer_drive_en_direct("https://drive.google.com/file/d/1H19rgLxGU7wL5VRhDNg2h9_WMf8rFk9s/view?usp=sharing")
 
 LIAISONS = {1: [1, 3], 2: [2, 4]}
 
